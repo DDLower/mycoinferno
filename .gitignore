@@ -1,0 +1,22 @@
+# RStudio session files
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Ignore all knitted outputs (HTML, Word, PDF)
+*.html
+*.pdf
+*.docx
+
+# Ignore image exports
+*.png
+*.jpg
+*.tiff
+
+# OS/system junk
+.DS_Store
+Thumbs.db
+
+# EXCEPTIONS
+!Final_Analysis.html

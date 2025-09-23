@@ -1,0 +1,286 @@
+---
+title: "FvFm_manuscript"
+author: "Dustin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, include=FALSE}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(emmeans)
+library(multcompView)
+
+```
+
+# **1. Load Data and Format x-Axis**
+```{r load-data, message=FALSE, warning=FALSE}
+# Load the data
+fvfm_data <- read.csv("FvFm.csv")
+
+fvfm_data$Seedling = as.factor(fvfm_data$Seedling)
+fvfm_data$Sterilization = as.factor(fvfm_data$Sterilization)
+fvfm_data$Burn_Severity = as.factor(fvfm_data$Burn_Severity)
+fvfm_data$ABA_Concentration = as.factor(fvfm_data$ABA_Concentration)
+
+# Remove underscores
+fvfm_data$Burn_Severity <- gsub("_", " ", fvfm_data$Burn_Severity)
+
+```
+
+## **2. Create model and transform**
+```{r}
+# Remove biologically impossible outlier
+fvfm_data_clean <- subset(fvfm_data, Fv_Fm > 0.1)
+
+# Transform data to stabilize variance
+fvfm_data_clean$Fv_Fm_asin <- asin(sqrt(fvfm_data_clean$Fv_Fm))
+
+# Refit model
+fvfm_model_clean <- lm(Fv_Fm_asin ~ Burn_Severity * Water * Sterilization, data = fvfm_data_clean)
+```
+
+```{r diagnoistics, echo=TRUE, eval=TRUE, include=FALSE}
+# Check model assumptions after transformation
+pls205_diagnostics(fvfm_model_clean)
+
+```
+
+
+## **3. Analyze data and calculate means**
+```{r}
+# Run ANOVA on the transformed model
+anova(fvfm_model_clean)
+
+# Burn severity estimates
+burn_means <- emmeans(fvfm_model_clean, ~ Burn_Severity)
+burn_means
+
+# Drought estimates
+drought_means <- emmeans(fvfm_model_clean, ~ Water)
+drought_means
+
+# Sterilization estimates
+ster_means <- emmeans(fvfm_model_clean, ~ Sterilization)
+ster_means
+
+# Burn x Sterilization interaction
+burn_ster_means <- emmeans(fvfm_model_clean, ~ Burn_Severity * Sterilization)
+burn_ster_means
+
+#Back-transform
+burn_ster_means_df <- as.data.frame(burn_ster_means) |>
+  dplyr::mutate(
+    FvFm_estimate = (sin(emmean))^2,
+    lower_FvFm = (sin(lower.CL))^2,
+    upper_FvFm = (sin(upper.CL))^2
+  )
+
+
+burn_means_df <- as.data.frame(burn_means) |>
+  dplyr::mutate(
+    FvFm_estimate = (sin(emmean))^2,
+    lower_FvFm = (sin(lower.CL))^2,
+    upper_FvFm = (sin(upper.CL))^2
+  )
+
+drought_means_df <- as.data.frame(drought_means) |>
+  dplyr::mutate(
+    FvFm_estimate = (sin(emmean))^2,
+    lower_FvFm = (sin(lower.CL))^2,
+    upper_FvFm = (sin(upper.CL))^2
+  )
+
+ster_means_df <- as.data.frame(ster_means) |>
+  dplyr::mutate(
+    FvFm_estimate = (sin(emmean))^2,
+    lower_FvFm = (sin(lower.CL))^2,
+    upper_FvFm = (sin(upper.CL))^2
+  )
+
+# Compare burn severity
+pairs(burn_means, adjust = "tukey")
+
+# Compare drought treatments
+pairs(drought_means, adjust = "tukey")
+
+# Compare sterilization means
+pairs(ster_means, adjust = "tukey")
+
+# Compare interaction effect means
+pairs(burn_ster_means, adjust = "tukey")
+
+
+```
+
+```{r}
+#Emmeans
+fvfm_drought_means <- emmeans(fvfm_model_clean, ~ Water)
+summary(fvfm_drought_means)
+
+fvfm_burn_water <- emmeans(fvfm_model_clean, ~ Burn_Severity * Water)
+summary(fvfm_burn_water)
+
+```
+
+## **4. Plot**
+```{r}
+# Clean and re-level burn severity labels
+fvfm_data_clean$Water <- gsub("_", " ", fvfm_data_clean$Water)
+fvfm_data_clean$Burn_Severity <- gsub("_", " ", fvfm_data_clean$Burn_Severity)
+fvfm_data_clean$Burn_Severity <- case_when(
+  fvfm_data_clean$Burn_Severity == "High"     ~ "High",
+  fvfm_data_clean$Burn_Severity == "Never"    ~ "Never",
+  fvfm_data_clean$Burn_Severity == "Low Old"  ~ "Low (Old)",
+  fvfm_data_clean$Burn_Severity == "Low New"  ~ "Low (New)",
+  TRUE                                   ~ NA_character_
+)
+fvfm_data_clean$Burn_Severity <- factor(fvfm_data_clean$Burn_Severity,
+                                  levels = c("High", "Low (New)", "Low (Old)", "Never"))
+
+# Ensure correct factor levels for facets
+fvfm_data_clean$Sterilization <- factor(fvfm_data_clean$Sterilization,
+                                  levels = c("Sterilized", "Unsterilized"))
+
+# Colorblind-friendly palette
+cb_palette <- c("ABA" = "#E69F00", "Water Limitation" = "#009E73", "Moist" = "#56B4E9")
+
+# Add daggers to show significant difference between sterilized and unsterilized panels
+dagger_df <- data.frame(
+  Sterilization = c("Sterilized", "Unsterilized"),
+  label = c("†", "††")
+)
+
+
+# Build plot
+## Figure 3: Fv/Fm
+fvfm_plot <- ggplot(fvfm_data_clean, aes(x = Burn_Severity, y = Fv_Fm, fill = Water)) +
+  geom_boxplot(outlier.shape = 21, outlier.size = 2, color = "black") +
+ geom_jitter(
+  aes(fill = Water),
+  shape = 21,
+  color = "black",
+  stroke = 0.4,
+  size = 2,
+  alpha = 0.6,
+  position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75)
+) +
+  scale_fill_manual(values = cb_palette) +
+  scale_color_manual(values = cb_palette) +
+  facet_wrap(~ Sterilization) +
+  labs(
+    x = "Burn Severity",
+    y = "Fv/Fm",
+    fill = "Water Treatment",
+    color = "Water Treatment"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(face = "bold"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    plot.title = element_blank()
+  ) +
+  geom_text(
+    data = dagger_df,
+    mapping = aes(x = Inf, y = -Inf, label = label),
+    inherit.aes = FALSE,
+    size = 6,
+    hjust = 1.2,
+    vjust = -1
+  )
+
+## Figure 3: Fv/Fm
+fvfm_plot
+
+```
+
+## **5. ABA concentration analysis**
+```{r}
+
+# subset just ABA-treated seedlings
+aba_data <- subset(fvfm_data_clean, Water == "ABA")
+
+# Make sure it's a factor again
+aba_data$ABA_Concentration <- droplevels(aba_data$ABA_Concentration)
+
+# New model for ABA
+aba_model <- lm(Fv_Fm_asin ~ ABA_Concentration, data = aba_data)
+aba_means <- emmeans(aba_model, ~ ABA_Concentration)
+pairs(aba_means, adjust = "tukey")
+
+aba_means_df <- as.data.frame(aba_means) |>
+  dplyr::mutate(
+    FvFm_estimate = (sin(emmean))^2,
+    lower_FvFm = (sin(lower.CL))^2,
+    upper_FvFm = (sin(upper.CL))^2
+  )
+
+aba_means_df
+```
+
+
+```{r}
+# Ensure factor order
+aba_data$ABA_Concentration <- factor(aba_data$ABA_Concentration, levels = c("100", "300", "500"))
+
+# Define colors for ABA concentrations
+aba_colors <- c("100" = "#66c2a5", "300" = "#fc8d62", "500" = "#8da0cb")
+
+# Fit model
+model_aba <- lm(Fv_Fm ~ ABA_Concentration, data = aba_data)
+
+# Estimated marginal means
+emm_aba <- emmeans(model_aba, ~ ABA_Concentration)
+
+# Compact letter display
+cld_aba <- multcomp::cld(emm_aba, Letters = letters, adjust = "tukey")
+cld_aba$.group <- gsub(" ", "", cld_aba$.group)  # Clean up spacing
+
+# Join letters to data
+aba_data$aba_concentration <- as.factor(aba_data$ABA_Concentration)
+plot_data <- left_join(aba_data, cld_aba[, c("ABA_Concentration", ".group")], by = "ABA_Concentration")
+
+# Create plot
+aba_con <- ggplot(plot_data, aes(x = ABA_Concentration, y = Fv_Fm, fill = ABA_Concentration)) +
+  geom_boxplot(outlier.shape = NA, width = 0.6, color = "black") +
+  geom_jitter(
+    aes(fill = ABA_Concentration),
+    shape = 21,
+    color = "black",
+    size = 2,
+    stroke = 0.4,
+    width = 0.1,
+    alpha = 0.8
+  ) +
+  geom_text(
+    data = cld_aba,
+    aes(x = ABA_Concentration, y = max(plot_data$Fv_Fm, na.rm = TRUE) + 0.03, label = .group),
+    inherit.aes = FALSE,
+    size = 5,
+    fontface = "bold"
+  ) +
+  scale_fill_manual(values = aba_colors) +
+  labs(x = "ABA Concentration (µM)", y = "Fv/Fm") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(face = "bold")
+  )
+
+# Display plot
+aba_con
+```
+

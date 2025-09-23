@@ -1,0 +1,321 @@
+---
+title: "Stacked_bar_update"
+author: "Dustin"
+date: "2025-07-26"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r setup-libraries, include=FALSE}
+# Load required libraries
+library(phyloseq)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(randomcoloR)
+
+```
+
+## **1. Load Data and Create Phyloseq Object**
+```{r read-data}
+# Load data
+otu_table <- read.csv("otu_table_mycoinferno.csv", row.names = 1, check.names = FALSE)
+taxonomy_table <- read.csv("tax_table_mycoinferno.csv", row.names = 1, check.names = FALSE)
+metadata <- read.csv("metadata.csv", row.names = 1, check.names = FALSE)
+
+# Create phyloseq object
+physeq <- phyloseq(
+  otu_table(otu_table, taxa_are_rows = TRUE),
+  tax_table(as.matrix(taxonomy_table)),
+  sample_data(metadata)
+)
+
+```
+
+## **2. Transform Data and Make Necessary Adjustments**
+```{r preprocess-all-taxa}
+# Transform to relative abundance
+physeq_transformed <- transform_sample_counts(physeq, function(x) x / sum(x))
+
+# Melt data for ggplot
+physeq_melt <- psmelt(physeq_transformed)
+
+physeq_emf_melt <- psmelt(physeq_emf_transformed)
+
+# Adjust taxonomy and sample data
+physeq_melt <- physeq_melt %>%
+  mutate(
+    burn_severity = factor(burn_severity, levels = c("High", "Low_New", "Low_Old", "Never")),
+    burn_severity = str_replace_all(burn_severity, "_", " "),
+    genus = ifelse(is.na(genus) | genus == "", "Eurotiales (Family)", genus)
+  ) %>%
+  filter(genus != "")
+
+# Split Rhizopogon by species (keep same grey color later)
+physeq_melt$genus_species <- ifelse(
+  physeq_melt$genus == "Rhizopogon",
+  paste0("Rhizopogon_", physeq_melt$species),
+  physeq_melt$genus
+)
+
+# Split Rhizopogon by species for EMF
+physeq_emf_melt$genus_species <- ifelse(
+  physeq_emf_melt$genus == "Rhizopogon",
+  paste0("Rhizopogon_", physeq_emf_melt$species),
+  physeq_emf_melt$genus
+)
+
+
+```
+
+## **3. Set Seed for Reproducibility and Contrasting Color Palette**
+```{r define-colors}
+# Set seed for reproducibility
+set.seed(123)
+
+# Identify unique genus_species
+all_genera <- unique(physeq_melt$genus_species)
+rhizo_species <- grep("^Rhizopogon_", all_genera, value = TRUE)
+other_genera <- setdiff(all_genera, rhizo_species)
+
+# Generate colors for non-Rhizopogon genera
+library(randomcoloR)
+other_colors <- distinctColorPalette(length(other_genera))
+
+# Assign grey to all Rhizopogon species
+rhizo_color <- "#808080"  # medium grey
+
+# Combine with Rhizopogon species first
+genus_species_colors <- setNames(
+  c(rep(rhizo_color, length(rhizo_species)), other_colors),
+  c(rhizo_species, other_genera)
+)
+
+
+# Assign black outline only to Rhizopogon species bars
+physeq_melt$border_color <- ifelse(
+  grepl("^Rhizopogon_", physeq_melt$genus_species),
+  "black",
+  NA_character_
+)
+
+
+```
+
+
+## **4. Create All Taxa Plot**
+```{r bar-chart-all-taxa, fig.width=12, fig.height=6}
+
+# EMF colors
+emf_colors_legend_fixed <- c(
+  "Rhizopogon"="#7f7f7f","Leohumicola"="#66c2a5","Pustularia"="#e7298a",
+  "Meliniomyces"="#ffd92f","Wilcoxina"="#8da0cb","Geopora"="#e78ac3",
+  "Entoloma"="#a6d854","Cadophora"="#e5c494","Hebeloma"="#b3b3b3",
+  "Hyaloscypha"="#6b3f24","Mallocybe"="#1f78b4","Sebacina"="#00bfc4",
+  "Boletus"="#984ea3","Humaria"="#ff7f00","Russula"="#4daf4a","Tuber"="#d53e4f"
+)
+
+# Extra genera for All-Taxa with high-constrast colors
+extra_alltaxa_colors <- c(
+  "Exophiala"           = "#2F4F4F",  
+  "Phialocephala"       = "#FEE0D2",
+  "Phialomyces"         = "#00CED1",
+  "Paraphoma"           = "#FF0000",
+  "Ilyonectria"         = "#228B22",
+  "Clitopilus"          = "#1E90FF",  
+  "Belonioscyphella"    = "#cc9900",  
+  "Fusarium"            = "#ccff99",  
+  "Myxomphalia"         = "#9400D3",  
+  "Pyronema"            = "#00FF7F",  
+  "Eurotiales (Family)" = "#00008B",  
+  "Unclassified"        = "#d0d0d0"   
+)
+
+# Build final palette
+all_taxa_colors_fixed <- c(emf_colors_legend_fixed, extra_alltaxa_colors)
+
+# Genus legend + Rhizopogon-only borders
+physeq_melt$genus_species_legend <- sub("_.*$", "", trimws(physeq_melt$genus_species))
+physeq_melt$genus_species_legend[physeq_melt$genus_species_legend == "" |
+                                   is.na(physeq_melt$genus_species_legend)] <- "Unclassified"
+# Normalize names to match palette
+physeq_melt$genus_species_legend[physeq_melt$genus_species_legend == "Phialocephela"] <- "Phialocephala"
+physeq_melt$genus_species_legend[grepl("^Eurotiales", physeq_melt$genus_species_legend)] <- "Eurotiales (Family)"
+
+gen_levels <- c("Rhizopogon", setdiff(sort(unique(physeq_melt$genus_species_legend)), "Rhizopogon"))
+physeq_melt$genus_species_legend <- factor(physeq_melt$genus_species_legend, levels = gen_levels)
+
+# Black outlines only for Rhizopogon species (keeps internal separators)
+physeq_melt$rhizo_border <- ifelse(grepl("^Rhizopogon_", physeq_melt$genus_species), "black", NA)
+
+# Plot 
+## Figure 6: All Taxa Stacked Bar
+all_taxa_plot <- ggplot(physeq_melt, aes(Sample, Abundance)) +
+  geom_bar(stat="identity", position="stack", width=0.9,
+           aes(fill = genus_species_legend, color = rhizo_border),
+           linewidth = 0.1, show.legend = TRUE) +
+  scale_fill_manual(values = all_taxa_colors_fixed, drop = FALSE) +
+  scale_color_identity(guide = "none") +
+  facet_grid(~ burn_severity, scales = "free_x", space = "free") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5, face = "bold"),
+    axis.text.y  = element_text(face = "bold"),
+    axis.title   = element_text(face = "bold"),
+    strip.text   = element_text(size = 12, face = "bold"),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text  = element_text(size = 10, face = "bold"),
+    panel.border = element_blank()            # <-- removes the black facet box
+  ) +
+  labs(x = "Samples", y = "Relative Abundance", fill = "Genus")
+
+# Figure 6: All Taxa Stacked Bar
+all_taxa_plot
+
+
+
+
+
+
+
+
+```
+
+
+## **5. Remove Non-EMF Taxa**
+```{r preprocess-emf-taxa}
+# Filter for EMF taxa
+non_emf_taxa <- c(
+  "Exophiala_equina", 
+  "Phialocephela_fortinii", 
+  "Phialocephela_sp", 
+  "Phialocephala_helvetica", 
+  "Phialomyces_arenicola", 
+  "Entoloma_sclerotiogenum", 
+  "Paraphoma_fimeti", 
+  "Ilyonectria_sp", 
+  "Ilyonectria_destructans", 
+  "Hyaloscypha_cf_hepaticicola", 
+  "Clitopilus_punulus", 
+  "Belonioscyphella_sp", 
+  "Fusarium_sp", 
+  "Leohumicola_minima", 
+  "Myxomphalia_maura", 
+  "Pyronema_sp",
+  "Eurotiales_sp"
+)
+physeq_emf <- prune_taxa(!taxa_names(physeq) %in% non_emf_taxa, physeq)
+physeq_emf <- prune_samples(sample_sums(physeq_emf) > 0, physeq_emf)
+
+# Transform to relative abundance
+physeq_emf_transformed <- transform_sample_counts(physeq_emf, function(x) x / sum(x))
+
+# Melt data for ggplot
+physeq_emf_melt <- psmelt(physeq_emf_transformed)
+
+physeq_emf_melt <- physeq_emf_melt %>%
+  mutate(
+    burn_severity = str_replace_all(burn_severity, "_", " "),
+    burn_severity = factor(burn_severity, levels = c("High", "Low New", "Low Old", "Never"))
+  )
+
+
+```
+
+```{r}
+
+physeq_emf_melt <- physeq_emf_melt %>%
+  mutate(
+    genus_species = ifelse(
+      genus == "Rhizopogon",
+      paste0("Rhizopogon_", species),
+      genus
+    )
+  )
+
+# Assign black outline only to Rhizopogon species
+physeq_emf_melt$border_color <- ifelse(
+  grepl("^Rhizopogon_", physeq_emf_melt$genus_species),
+  "black",
+  NA_character_
+)
+
+# Match color scheme from All Taxa plot
+emf_genera <- unique(physeq_emf_melt$genus_species)
+emf_colors <- genus_species_colors[emf_genera]
+
+# Remove legend labels for Rhizopogon species
+emf_labels <- names(emf_colors)
+emf_labels[grepl("^Rhizopogon_", emf_labels)] <- NA
+names(emf_colors) <- emf_labels
+
+
+```
+
+
+## **6. Create EMF-Only Plot**
+```{r bar-chart-emf-taxa, fig.width=12, fig.height=6}
+# Combine Rhizopogon species into one legend label
+physeq_emf_melt$genus_species_legend <- physeq_emf_melt$genus_species
+physeq_emf_melt$genus_species_legend[grepl("^Rhizopogon", physeq_emf_melt$genus_species)] <- "Rhizopogon"
+
+# Ensure factor levels include Rhizopogon first
+physeq_emf_melt$genus_species_legend <- factor(
+  physeq_emf_melt$genus_species_legend,
+  levels = c("Rhizopogon", setdiff(unique(physeq_emf_melt$genus_species_legend), "Rhizopogon"))
+)
+
+emf_colors_legend_fixed <- c(
+  "Rhizopogon"   = "#7f7f7f",  # Gray
+  "Leohumicola"  = "#66c2a5",  # Aqua green
+  "Pustularia"   = "#e7298a",  # Magenta (new)
+  "Meliniomyces" = "#ffd92f",  # Bright yellow
+  "Wilcoxina"    = "#8da0cb",  # Periwinkle blue
+  "Geopora"      = "#e78ac3",  # Light pink
+  "Entoloma"     = "#a6d854",  # Lime green
+  "Cadophora"    = "#e5c494",  # Sandy beige
+  "Hebeloma"     = "#b3b3b3",  # Medium gray
+  "Hyaloscypha"  = "#6b3f24",  # Van Dyke brown (new)
+  "Mallocybe"    = "#1f78b4",  # Strong blue
+  "Sebacina"     = "#00bfc4",  # Turquoise blue
+  "Boletus"      = "#984ea3",  # Purple
+  "Humaria"      = "#ff7f00",  # Bright orange
+  "Russula"      = "#4daf4a",  # Strong green
+  "Tuber"        = "#d53e4f"   # Dark blue
+)
+
+
+# Generate the EMF taxa stacked bar chart
+## Figure 7: EMF Only Stacked Bar
+emf_taxa_plot <- ggplot(physeq_emf_melt, aes(x = Sample, y = Abundance)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.9,
+           aes(fill = genus_species_legend, color = border_color),
+           size = 0.1, show.legend = TRUE) +
+  scale_fill_manual(values = emf_colors_legend_fixed, drop = FALSE) +
+  scale_color_manual(values = c("black" = "black", "NA" = NA), guide = "none") +
+  facet_grid(~burn_severity, scales = "free_x", space = "free") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 10, face = "bold")
+  ) +
+  labs(
+    x = "Samples",
+    y = "Relative Abundance",
+    fill = "Genus"
+  )
+
+# Figure 7: EMF Only Stacked Bar
+emf_taxa_plot
+
+
+
+
+```

@@ -1,0 +1,210 @@
+---
+title: "Species_manuscript"
+author: "Dustin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## **1. Load Required Libraries**
+
+```{r setup-libraries, include=FALSE}
+# Load required libraries
+library(tidyverse)
+library(ggplot2)
+library(PLS205)
+library(dplyr)
+library(emmeans)
+library(patchwork)
+```
+
+
+## **2. Load and Format Data**
+
+```{r read-datam message=FALSE, warning=FALSE}
+# Read in the data
+data <- read.csv("Species Count.csv")
+
+
+# Convert to factors
+data$sample = as.factor(data$sample)
+data$burn = as.factor(data$burn)
+data$rack = as.factor(data$rack)
+data$drought = as.factor(data$drought)
+
+
+# Reformat burn column
+data <- data %>%
+mutate(
+burn = factor(burn,
+levels = c("h", "ln", "lo", "n"),
+labels = c("High", "Low (New)", "Low (Old)", "Never"))
+)
+```
+
+
+
+```{r define-colors}
+
+# Colorblind-friendly palette
+burn_colors_cb <- c(
+"High" = hcl(h = 15, c = 75, l = 55),
+"Low (New)" = hcl(h = 260, c = 60, l = 65),
+"Low (Old)" = hcl(h = 75, c = 65, l = 75),
+"Never" = hcl(h = 330, c = 50, l = 70)
+)
+```
+
+
+# **2. Linear Model and Analysis**
+
+
+```{r}
+# Fit model
+species_model <- lm(number_of_species ~ burn * drought, data = data)
+
+anova(species_model)
+
+```
+
+```{r normality, echo=TRUE, eval=TRUE, include=FALSE}
+# Q-Q plot for species_model
+qqnorm(resid(species_model), 
+       main = "Normal Q-Q Plot for species_model",
+       pch = 19, col = "black")
+qqline(resid(species_model), col = "blue", lwd = 2)
+```
+
+
+```{r lm-anova-species}
+
+# Model w/ ANOVA for categorical burn predictor
+species_model2 <- aov(number_of_species ~ burn, data = data)
+summary(species_model2)
+
+# Post-hoc analysis
+TukeyHSD(species_model2)
+
+# Emmeans
+species_means <- emmeans(species_model2, ~ burn)
+species_means
+
+# CLD table
+species_cld <- cld(species_means, Letters = letters)
+species_cld
+```
+
+```{r diagnostic, echo=TRUE, eval=TRUE, include=FALSE}
+
+# Diagnostics (just to double-check)
+pls205_diagnostics(species_model2)
+```
+
+
+```{r lm-anova-emf}
+
+# Model w/ categorical burn predictor for just EMF
+emf_model2 <- aov(emf_species ~ burn, data = data)
+summary(emf_model2)
+
+# Post-hoc analysis
+TukeyHSD(emf_model2)
+
+# Emmeans
+emf_means <- emmeans(emf_model2, ~ burn)
+emf_means
+
+# CLD table
+species_emf_cld <- cld(emf_means, Letters = letters)
+species_emf_cld
+```
+
+# **3. Create Plots and Combine**
+
+
+```{r plot-all-tax}
+
+# Create CLD annotations
+cld_all <- data.frame(
+burn = c("High", "Low (New)", "Never", "Low (Old)"),
+label = c("a", "ab", "ab", "b"),
+y = c(6.5, 6.5, 6.5, 6.5)
+)
+
+# All taxa plot
+all_species_plot <- ggplot(data, aes(x = burn, y = number_of_species, fill = burn)) +
+geom_boxplot(outlier.shape = NA, alpha = 0.6, color = "black") +
+geom_jitter(position = position_jitter(width = 0.2, height = 0.2),
+shape = 21, color = "black", size = 1.5, alpha = 0.6, stroke = 0.4) +
+geom_text(data = cld_all, aes(x = burn, y = y, label = label),
+inherit.aes = FALSE, size = 5, fontface = "bold") +
+labs(x = "Burn Severity", y = "Species Count", title = "All Taxa") +
+scale_fill_manual(values = burn_colors_cb) +
+theme_minimal(base_size = 14) +
+theme(
+axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+axis.text.y = element_text(face = "bold"),
+axis.title = element_text(face = "bold"),
+legend.position = "none",
+panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+plot.title = element_text(face = "bold", size = 14, hjust = 0.5)
+)
+
+all_species_plot
+```
+
+
+
+
+
+```{r plot-emf}
+
+# Create CLD annotations
+cld_emf <- data.frame(
+burn = c("High", "Low (New)", "Never", "Low (Old)"),
+label = c("a", "bc", "b", "c"),
+y = c(6.5, 6.5, 6.5, 6.5)
+)
+
+# EMF only plot
+emf_species_plot <- ggplot(data, aes(x = burn, y = emf_species, fill = burn)) +
+geom_boxplot(outlier.shape = NA, alpha = 0.6, color = "black") +
+geom_jitter(position = position_jitter(width = 0.2, height = 0.2),
+shape = 21, color = "black", size = 1.5, alpha = 0.6, stroke = 0.4) +
+geom_text(data = cld_emf, aes(x = burn, y = y, label = label),
+inherit.aes = FALSE, size = 5, fontface = "bold") +
+labs(x = "Burn Severity", y = "EMF Species Count", title = "EMF Taxa") +
+scale_fill_manual(values = burn_colors_cb) +
+theme_minimal(base_size = 14) +
+theme(
+axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+axis.text.y = element_text(size = 14, face = "bold"),
+axis.title = element_text(size = 14, face = "bold"),
+legend.position = "none",
+panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+plot.title = element_text(face = "bold", size = 14, hjust = 0.5)
+)
+
+emf_species_plot
+```
+
+
+
+```{r final-combined-species-plot}
+
+# Combine plots
+## Figure 4: Species Richness
+combined_species_plot <- (all_species_plot | plot_spacer() | emf_species_plot) +
+plot_layout(widths = c(1, 0.02, 1)) +
+plot_annotation(
+tag_levels = "A",
+theme = theme(plot.tag = element_text(face = "bold", size = 16))
+)
+
+# Figure 4: Species Richness
+combined_species_plot
+
+```
