@@ -28,7 +28,7 @@ library(PLS205)
 
 ## **1. Load and Clean Data**
 ```{r load-data, message=FALSE, warning=FALSE}
-biomass_data <- read.csv("biomass_data.csv") %>%
+biomass_data <- read.csv("biomass_data_manuscript.csv") %>%
 mutate(
 burn = factor(burn, levels = c("h", "ln", "lo", "n")),
 sterilization = factor(sterilization),
@@ -108,33 +108,40 @@ print(unsterilized_cld)
 
 # Colorblind-friendly palette 
 burn_colors_cb <- c(
-"High" = hcl(15, 75, 55),
-"Low (New)" = hcl(260, 60, 65),
-"Low (Old)" = hcl(75, 65, 75),
-"Never" = hcl(330, 50, 70)
+  "High" = hcl(15, 75, 55),
+  "Low (Initial)" = hcl(260, 60, 65),
+  "Low (Advanced)" = hcl(75, 65, 75),
+  "Suppressed" = hcl(330, 50, 70)
 )
 
 # CLD
-unsterilized_cld$burn <- recode(unsterilized_cld$burn, h = "High", ln = "Low (New)", lo = "Low (Old)", n = "Never")
-unsterilized_cld$label_y <- max(biomass_unsterilized$dry_biomass, na.rm = TRUE) + 0.05
+unsterilized_cld$burn <- recode(unsterilized_cld$burn, 
+                                h = "High", ln = "Low (Initial)", lo = "Low (Advanced)", n = "Suppressed")
+unsterilized_cld$label_y <- max(biomass_data$dry_biomass, na.rm = TRUE) + 0.05
+
+# Determine shared y-axis range
+y_limits <- c(0, max(biomass_data$dry_biomass, na.rm = TRUE) + 0.05)
 
 # Plot unsterilized soil biomass
 final_burn_plot <- biomass_unsterilized %>%
-mutate(burn = recode(burn, h = "High", ln = "Low (New)", lo = "Low (Old)", n = "Never")) %>%
-ggplot(aes(x = burn, y = dry_biomass, fill = burn)) +
-geom_boxplot(width = 0.6, outlier.shape = NA, alpha = 0.8, color = "black") +
-geom_jitter(width = 0.15, size = 1.5, shape = 21, color = "black", stroke = 0.3, alpha = 0.6) +
-geom_text(data = unsterilized_cld, aes(x = burn, y = label_y, label = .group), inherit.aes = FALSE, fontface = "bold", size = 5) +
-scale_fill_manual(values = burn_colors_cb) +
+  mutate(burn = recode(burn, 
+                       h = "High", ln = "Low (Initial)", lo = "Low (Advanced)", n = "Suppressed")) %>%
+  ggplot(aes(x = burn, y = dry_biomass, fill = burn)) +
+  geom_boxplot(width = 0.6, outlier.shape = NA, alpha = 0.8, color = "black") +
+  geom_jitter(width = 0.15, size = 1.5, shape = 21, color = "black", stroke = 0.3, alpha = 0.6) +
+  geom_text(data = unsterilized_cld, aes(x = burn, y = label_y, label = .group),
+            inherit.aes = FALSE, fontface = "bold", size = 5) +
+  scale_fill_manual(values = burn_colors_cb) +
+  coord_cartesian(ylim = y_limits) +
   labs(x = "Burn Severity", y = "Dry Biomass (g)", title = "Unsterilized Soils") +
-theme_minimal(base_size = 14) +
-theme(
-axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
-axis.title = element_text(face = "bold"),
-panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
-legend.position = "none"
-)
-
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 50, hjust = 1, face = "bold"),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    legend.position = "none"
+  )
 
 final_burn_plot
 ```
@@ -144,37 +151,50 @@ final_burn_plot
 
 # Filter for sterilized soils only
 biomass_sterilized <- biomass_data %>% filter(sterilization == "sterilized")
+
 model_sterilized <- lm(dry_biomass ~ burn, data = biomass_sterilized)
 burn_emm_sterilized <- emmeans(model_sterilized, ~ burn)
 burn_cld_sterilized <- cld(burn_emm_sterilized, adjust = "bonferroni", Letters = letters)
-burn_cld_sterilized$burn <- recode(burn_cld_sterilized$burn, h = "High", ln = "Low (New)", lo = "Low (Old)", n = "Never")
-burn_cld_sterilized$label_y <- max(biomass_sterilized$dry_biomass, na.rm = TRUE) + 0.05
+
+burn_cld_sterilized$burn <- recode(burn_cld_sterilized$burn, 
+                                   h = "High", ln = "Low (Initial)", lo = "Low (Advanced)", n = "Suppressed")
+burn_cld_sterilized$label_y <- max(biomass_data$dry_biomass, na.rm = TRUE) + 0.05
 
 # Plot biomass for sterilized soils
 plot_sterilized <- biomass_sterilized %>%
-mutate(burn = recode(burn, h = "High", ln = "Low (New)", lo = "Low (Old)", n = "Never")) %>%
-ggplot(aes(x = burn, y = dry_biomass, fill = burn)) +
-geom_boxplot(width = 0.6, outlier.shape = NA, color = "black") +
-geom_jitter(width = 0.15, size = 1.5, shape = 21, color = "black", stroke = 0.3, alpha = 0.6) +
-geom_text(data = burn_cld_sterilized, aes(x = burn, y = label_y, label = .group), inherit.aes = FALSE, fontface = "bold", size = 5) +
-scale_fill_manual(values = burn_colors_cb) +
-labs(x = "Burn Severity", y = "Dry Biomass (g)", title = "Sterilized Soils") +
-theme_minimal(base_size = 14) +
-theme(
-axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
-axis.title = element_text(face = "bold"),
-panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
-legend.position = "none"
-)
-
+  mutate(burn = recode(burn, 
+                       h = "High", ln = "Low (Initial)", lo = "Low (Advanced)", n = "Suppressed")) %>%
+  ggplot(aes(x = burn, y = dry_biomass, fill = burn)) +
+  geom_boxplot(width = 0.6, outlier.shape = NA, alpha = 0.8, color = "black") +
+  geom_jitter(width = 0.15, size = 1.5, shape = 21, color = "black", stroke = 0.3, alpha = 0.6) +
+  geom_text(data = burn_cld_sterilized, aes(x = burn, y = label_y, label = .group),
+            inherit.aes = FALSE, fontface = "bold", size = 5) +
+  scale_fill_manual(values = burn_colors_cb) +
+  coord_cartesian(ylim = y_limits) +
+  labs(x = "Burn Severity", y = "Dry Biomass (g)", title = "Sterilized Soils") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 50, hjust = 1, face = "bold"),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    legend.position = "none"
+  )
 
 plot_sterilized
 ```
 
 
 ## 7. Combined Figure
-```{r combined-plot}
+```{r combined-plot, fig.width=12, fig.height=7}
 # Figure 1: Biomass
-combined_biomass_plot <- final_burn_plot + plot_sterilized + plot_layout(nrow = 1, guides = "collect")
+combined_biomass_plot <- final_burn_plot + plot_sterilized +
+  plot_layout(nrow = 1, guides = "collect")
+
 combined_biomass_plot
 ```
+
+
+
+
+

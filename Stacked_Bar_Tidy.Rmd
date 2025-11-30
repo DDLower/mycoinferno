@@ -45,13 +45,17 @@ physeq_transformed <- transform_sample_counts(physeq, function(x) x / sum(x))
 # Melt data for ggplot
 physeq_melt <- psmelt(physeq_transformed)
 
-physeq_emf_melt <- psmelt(physeq_emf_transformed)
-
 # Adjust taxonomy and sample data
 physeq_melt <- physeq_melt %>%
   mutate(
     burn_severity = factor(burn_severity, levels = c("High", "Low_New", "Low_Old", "Never")),
     burn_severity = str_replace_all(burn_severity, "_", " "),
+    burn_severity_display = recode(burn_severity,
+      "Low New" = "Low (Initial)",
+      "Low Old" = "Low (Advanced)",
+      "Never" = "Suppressed",
+      .default = as.character(burn_severity)
+    ),
     genus = ifelse(is.na(genus) | genus == "", "Eurotiales (Family)", genus)
   ) %>%
   filter(genus != "")
@@ -63,12 +67,6 @@ physeq_melt$genus_species <- ifelse(
   physeq_melt$genus
 )
 
-# Split Rhizopogon by species for EMF
-physeq_emf_melt$genus_species <- ifelse(
-  physeq_emf_melt$genus == "Rhizopogon",
-  paste0("Rhizopogon_", physeq_emf_melt$species),
-  physeq_emf_melt$genus
-)
 
 
 ```
@@ -97,12 +95,8 @@ genus_species_colors <- setNames(
 )
 
 
-# Assign black outline only to Rhizopogon species bars
-physeq_melt$border_color <- ifelse(
-  grepl("^Rhizopogon_", physeq_melt$genus_species),
-  "black",
-  NA_character_
-)
+# Assign black outline to all bars
+physeq_melt$border_color <- "black"
 
 
 ```
@@ -150,18 +144,16 @@ physeq_melt$genus_species_legend[grepl("^Eurotiales", physeq_melt$genus_species_
 gen_levels <- c("Rhizopogon", setdiff(sort(unique(physeq_melt$genus_species_legend)), "Rhizopogon"))
 physeq_melt$genus_species_legend <- factor(physeq_melt$genus_species_legend, levels = gen_levels)
 
-# Black outlines only for Rhizopogon species (keeps internal separators)
-physeq_melt$rhizo_border <- ifelse(grepl("^Rhizopogon_", physeq_melt$genus_species), "black", NA)
 
 # Plot 
 ## Figure 6: All Taxa Stacked Bar
 all_taxa_plot <- ggplot(physeq_melt, aes(Sample, Abundance)) +
   geom_bar(stat="identity", position="stack", width=0.9,
-           aes(fill = genus_species_legend, color = rhizo_border),
+           aes(fill = genus_species_legend, color = border_color),
            linewidth = 0.1, show.legend = TRUE) +
   scale_fill_manual(values = all_taxa_colors_fixed, drop = FALSE) +
   scale_color_identity(guide = "none") +
-  facet_grid(~ burn_severity, scales = "free_x", space = "free") +
+  facet_grid(~ burn_severity_display, scales = "free_x", space = "free") +
   theme_minimal(base_size = 14) +
   theme(
     axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5, face = "bold"),
@@ -176,12 +168,6 @@ all_taxa_plot <- ggplot(physeq_melt, aes(Sample, Abundance)) +
 
 # Figure 6: All Taxa Stacked Bar
 all_taxa_plot
-
-
-
-
-
-
 
 
 ```
@@ -224,13 +210,14 @@ physeq_emf_melt <- physeq_emf_melt %>%
     burn_severity = factor(burn_severity, levels = c("High", "Low New", "Low Old", "Never"))
   )
 
-
-```
-
-```{r}
-
 physeq_emf_melt <- physeq_emf_melt %>%
   mutate(
+    burn_severity_display = case_when(
+      burn_severity == "Low New" ~ "Low (Initial)",
+      burn_severity == "Low Old" ~ "Low (Advanced)",
+      burn_severity == "Never" ~ "Suppressed",
+      TRUE ~ as.character(burn_severity)
+    ),
     genus_species = ifelse(
       genus == "Rhizopogon",
       paste0("Rhizopogon_", species),
@@ -238,12 +225,14 @@ physeq_emf_melt <- physeq_emf_melt %>%
     )
   )
 
-# Assign black outline only to Rhizopogon species
-physeq_emf_melt$border_color <- ifelse(
-  grepl("^Rhizopogon_", physeq_emf_melt$genus_species),
-  "black",
-  NA_character_
-)
+```
+
+```{r}
+
+
+# Assign black border to all taxa 
+physeq_emf_melt$border_color <- "black"
+
 
 # Match color scheme from All Taxa plot
 emf_genera <- unique(physeq_emf_melt$genus_species)
@@ -251,8 +240,9 @@ emf_colors <- genus_species_colors[emf_genera]
 
 # Remove legend labels for Rhizopogon species
 emf_labels <- names(emf_colors)
-emf_labels[grepl("^Rhizopogon_", emf_labels)] <- NA
-names(emf_colors) <- emf_labels
+emf_color_labels <- emf_labels
+emf_color_labels[grepl("^Rhizopogon_", emf_labels)] <- "Rhizopogon"
+names(emf_colors) <- emf_color_labels
 
 
 ```
@@ -294,11 +284,11 @@ emf_colors_legend_fixed <- c(
 ## Figure 7: EMF Only Stacked Bar
 emf_taxa_plot <- ggplot(physeq_emf_melt, aes(x = Sample, y = Abundance)) +
   geom_bar(stat = "identity", position = "stack", width = 0.9,
-           aes(fill = genus_species_legend, color = border_color),
-           size = 0.1, show.legend = TRUE) +
+         aes(fill = genus_species_legend, color = border_color),
+         linewidth = 0.1, show.legend = TRUE) +
   scale_fill_manual(values = emf_colors_legend_fixed, drop = FALSE) +
-  scale_color_manual(values = c("black" = "black", "NA" = NA), guide = "none") +
-  facet_grid(~burn_severity, scales = "free_x", space = "free") +
+  scale_color_manual(values = c("black" = "black"), na.value = NA, guide = "none") +
+  facet_grid(~burn_severity_display, scales = "free_x", space = "free") +
   theme_minimal(base_size = 14) +
   theme(
     axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
@@ -319,3 +309,6 @@ emf_taxa_plot
 
 
 ```
+
+
+

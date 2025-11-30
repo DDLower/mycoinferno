@@ -19,9 +19,12 @@ library(lme4)
 library(lmerTest)
 library(emmeans)
 library(multcompView)
+library(multcomp)
 library(colorspace)
 library(performance)
 library(patchwork)
+library(PLS205)
+library(forcats)
 ```
 
 
@@ -57,26 +60,28 @@ anova(col_model_rack, col_model)
 colonization_filtered <- colonization_data %>%
   filter(sterilization == "u") %>%
   mutate(
-    burn = recode(burn,
-      h  = "High",
-      ln = "Low (New)",
-      lo = "Low (Old)",
-      n  = "Never"
+    burn = fct_recode(burn,
+      "High"          = "h",
+      "Low (Initial)" = "ln",
+      "Low (Advanced)"= "lo",
+      "Suppressed"    = "n"
     ),
-    burn = factor(burn, levels = c("High", "Low (New)", "Low (Old)", "Never"))
+    # Set desired factor order (reference level = "High")
+    burn = fct_relevel(burn, "High", "Low (Initial)", "Low (Advanced)", "Suppressed")
   )
 
-# Create transformed column only for modeling
+# Apply arcsine sqrt transformation
 colonization_transformed <- colonization_filtered %>%
-  mutate(perc_col_asin = asin(sqrt(perc_col / 100)))  # divide by 100 to convert % to proportion
-
-# Linear model with transformed response
-col_model_trans <- lm(perc_col_asin ~ burn * drought, data = colonization_transformed)
+  mutate(perc_col_asin = asin(sqrt(perc_col / 100)))
 
 ```
 
 
 ```{r diagnostics, echo=TRUE, eval=TRUE, include=FALSE}
+
+# Final full model for diagnostics (after filtering to unsterilized samples)
+col_model_trans <- lm(perc_col_asin ~ burn * drought, data = colonization_transformed)
+
 # Check model assumptions
 pls205_diagnostics(col_model_trans)
 ```
@@ -84,33 +89,48 @@ pls205_diagnostics(col_model_trans)
 
 ## **4. ANOVA and Estimated Marginal Means**
 ```{r anova-emmeans}
+# ANOVA
 anova(col_model_trans)
 
-# Run Dunnett-adjusted pairwise comparisons (using High as reference)
-col_dunnett <- emmeans(col_model_trans, specs = "burn") %>%
-  contrast(method = "trt.vs.ctrl", ref = 1, adjust = "dunnett")  # 1 = "High"
+# Drought and burn x drought interaction not significant
+# Simplify model for CLD table
+col_model_simple <- lm(perc_col_asin ~ burn, data = colonization_transformed)
 
-# View the pairwise comparisons
-summary(col_dunnett)
+# Get estimated marginal means
+em <- emmeans(col_model_simple, ~ burn)
 
-# Get estimated marginal means for back-transformation and plotting
-col_means_trans <- emmeans(col_model_trans, ~ burn)
+# Get pairwise comparisons
+pairwise <- contrast(em, method = "pairwise", adjust = "none")
 
-# Generate CLD based on Dunnett's test (manually supply contrasts)
-cld_tbl <- cld(
-  col_means_trans,
-  adjust = "dunnett",
-  Letters = letters,
-  sort = FALSE
-) %>%
-  as.data.frame() %>%
+# Get the summary and clean the names
+pw_summary <- summary(pairwise)
+
+# Keep only one direction of each contrast
+pvals_named <- pw_summary$p.value
+names(pvals_named) <- gsub(" - ", "-", pw_summary$contrast)
+pvals_named <- pvals_named[!duplicated(names(pvals_named))]   
+
+# Create compact letters
+letter_obj <- multcompLetters(pvals_named, threshold = 0.05)
+
+# Print the resulting letters to verify
+letter_obj$Letters
+
+# Merge with EMMs safely
+cld_tbl <- as.data.frame(em) %>%
   mutate(
-    perc_bt = (sin(emmean))^2 * 100  # back-transform to percent
+    .group = letter_obj$Letters[match(as.character(burn), names(letter_obj$Letters))],
+    perc_bt = (sin(emmean))^2 * 100
   )
 
 cld_tbl
 
+# Get Dunnett comparisons
+dunnett_contrasts <- contrast(em, method = "dunnett", ref = "High")
+summary(dunnett_contrasts)
+
 ```
+
 ```{r}
 # Back-transform arcsine sqrt: 
 # high
@@ -118,17 +138,17 @@ asin_mean <- 0.635
 prop_est <- (sin(asin_mean)^2)
 prop_est
 
-# ln
+# low (initial)
 asin_mean2 <- 0.812
 prop_est2 <- (sin(asin_mean2)^2)
 prop_est2
 
-# lo
+# low (advanced)
 asin_mean3 <- 0.804
 prop_est3 <- (sin(asin_mean3)^2)
 prop_est3
 
-# n
+# suppressed
 asin_mean4 <- 0.692
 prop_est4 <- (sin(asin_mean4)^2)
 prop_est4
@@ -136,23 +156,21 @@ prop_est4
 
 
 ## **5. Final Plot: Percent Colonization**
-```{r final-plot}
-# Calculate CLD label height
-cld_y <- max(colonization_filtered$perc_col * 100, na.rm = TRUE)
-cld_pad <- max(2, 0.03 * diff(range(colonization_filtered$perc_col * 100, na.rm = TRUE)))
-cld_y <- cld_y + cld_pad
-cld_tbl$label_y <- cld_y
+```{r final-plot, fig.width=10, fig.height=6}
 
 # Define colorblind-safe fill colors
 burn_colors_cb <- c(
   "High"       = hcl(h = 15,  c = 75, l = 55),
-  "Low (New)"  = hcl(h = 260, c = 60, l = 65),
-  "Low (Old)"  = hcl(h = 75,  c = 65, l = 75),
-  "Never"      = hcl(h = 330, c = 50, l = 70)
+  "Low (Initial)"  = hcl(h = 260, c = 60, l = 65),
+  "Low (Advanced)"  = hcl(h = 75,  c = 65, l = 75),
+  "Suppressed"      = hcl(h = 330, c = 50, l = 70)
 )
 
-# Final plot with restored styling
-## Figure 2: Colonzation
+# Set a uniform height for CLD letters across all groups
+cld_tbl$label_y <- 75  # Set this to a constant height that clears all whiskers
+y_axis_limit <- 80     # Set y-axis max just above the labels
+
+# Final colonization plot
 final_colonization_plot <- ggplot(
   colonization_filtered %>% mutate(perc_col = perc_col * 100),
   aes(x = burn, y = perc_col, fill = burn)
@@ -161,16 +179,16 @@ final_colonization_plot <- ggplot(
     outlier.shape = NA,
     alpha = 0.9,
     width = 0.6,
-    color = "black",    
+    color = "black",
     linewidth = 0.8
   ) +
   geom_jitter(
     size = 2.5,
     width = 0.15,
     alpha = 0.7,
-    shape = 21,          
-    stroke = 0.6,        
-    color = "black"     
+    shape = 21,
+    stroke = 0.6,
+    color = "black"
   ) +
   geom_text(
     data = cld_tbl,
@@ -181,11 +199,11 @@ final_colonization_plot <- ggplot(
   ) +
   scale_fill_manual(values = burn_colors_cb) +
   scale_y_continuous(
-    name = "Percent colonization (%)",
-    limits = c(0, cld_y + cld_pad),
-    expand = expansion(mult = c(0, 0.02))
+    name = "Percent Colonization (%)",
+    limits = c(0, y_axis_limit),
+    expand = expansion(mult = c(0, 0))
   ) +
-  labs(x = "Burn severity") +
+  labs(x = "Burn Severity") +
   theme_minimal(base_size = 14) +
   theme(
     axis.title = element_text(face = "bold"),
@@ -195,9 +213,13 @@ final_colonization_plot <- ggplot(
     legend.position = "none"
   )
 
-# Figure 2: Colonization
+# Display the final aligned figure
 final_colonization_plot
+
 ```
+
+
+
 
 
 

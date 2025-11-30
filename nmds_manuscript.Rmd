@@ -37,7 +37,7 @@ metadata <- read.csv("metadata.csv", row.names = 1)
 metadata$burn_severity <- factor(
   metadata$burn_severity,
   levels = c("High", "Low_New", "Low_Old", "Never"),
-  labels = c("High", "Low (New)", "Low (Old)", "Never")
+  labels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed")
 )
 
 table(metadata$burn_severity, useNA = "ifany")
@@ -83,7 +83,7 @@ physeq_emf_transformed <- transform_sample_counts(physeq_emf, function(x) {
 ```
 
 ## **3. Ordinate and Plot**
-```{r ordinate and plot}
+```{r ordinate and plot, fig.width=12, fig.height=6}
 
 # Run NMDS ordinations
 nmds_all <- ordinate(physeq_all_transformed, method = "NMDS", distance = "bray")
@@ -102,9 +102,9 @@ ordination_df_emf <- merge(ordination_df_emf, as.data.frame(sample_data(physeq_e
 # Colors
 burn_colors_cb <- c(
   "High"       = hcl(15,  75, 55),
-  "Low (New)"  = hcl(260, 60, 65),
-  "Low (Old)"  = hcl(75,  65, 75),
-  "Never"      = hcl(330, 50, 70)
+  "Low (Initial)"  = hcl(260, 60, 65),
+  "Low (Advanced)"  = hcl(75,  65, 75),
+  "Suppressed"      = hcl(330, 50, 70)
 )
 
 lims_x <- c(-4, 6)
@@ -124,9 +124,9 @@ ordination_df_emf$NMDS1 <- -ordination_df_emf$NMDS1
 
 # Fix factor levels
 ordination_df_all$burn_severity <- factor(trimws(ordination_df_all$burn_severity),
-  levels = c("High", "Low (New)", "Low (Old)", "Never"))
+  levels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed"))
 ordination_df_emf$burn_severity <- factor(trimws(ordination_df_emf$burn_severity),
-  levels = c("High", "Low (New)", "Low (Old)", "Never"))
+  levels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed"))
 
 # Convert "Drought" → "Water Limitation", preserve all valid entries
 ordination_df_all$water <- factor(
@@ -194,6 +194,7 @@ p_emf <- ggplot(ordination_df_emf, aes(NMDS1, NMDS2, color = burn_severity, shap
     legend.position = "right"
   )
 
+p_emf
 # COMBINE
 ## Figure 5: NMDS
 final_nmds_plot <- (p_all + p_emf) +
@@ -275,6 +276,5 @@ emf_beta_disp <- betadisper(emf_bray, group = emf_metadata$burn_severity)
 anova(emf_beta_disp)
 
 ```
-
 
 

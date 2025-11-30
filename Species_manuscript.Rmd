@@ -19,6 +19,9 @@ library(PLS205)
 library(dplyr)
 library(emmeans)
 library(patchwork)
+library(multcomp)
+library(multcompView)
+
 ```
 
 
@@ -41,7 +44,7 @@ data <- data %>%
 mutate(
 burn = factor(burn,
 levels = c("h", "ln", "lo", "n"),
-labels = c("High", "Low (New)", "Low (Old)", "Never"))
+labels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed"))
 )
 ```
 
@@ -52,9 +55,9 @@ labels = c("High", "Low (New)", "Low (Old)", "Never"))
 # Colorblind-friendly palette
 burn_colors_cb <- c(
 "High" = hcl(h = 15, c = 75, l = 55),
-"Low (New)" = hcl(h = 260, c = 60, l = 65),
-"Low (Old)" = hcl(h = 75, c = 65, l = 75),
-"Never" = hcl(h = 330, c = 50, l = 70)
+"Low (Initial)" = hcl(h = 260, c = 60, l = 65),
+"Low (Advanced)" = hcl(h = 75, c = 65, l = 75),
+"Suppressed" = hcl(h = 330, c = 50, l = 70)
 )
 ```
 
@@ -70,8 +73,20 @@ anova(species_model)
 
 ```
 
+```{r}
+
+# Diagnostics
+pls205_diagnostics(species_model)
+
+# No Scale-Location... try base R
+par(mfrow = c(2,2))
+plot(species_model)
+
+```
+
+
 ```{r normality, echo=TRUE, eval=TRUE, include=FALSE}
-# Q-Q plot for species_model
+# Double-check Q-Q plot
 qqnorm(resid(species_model), 
        main = "Normal Q-Q Plot for species_model",
        pch = 19, col = "black")
@@ -129,29 +144,29 @@ species_emf_cld
 
 # Create CLD annotations
 cld_all <- data.frame(
-burn = c("High", "Low (New)", "Never", "Low (Old)"),
+burn = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed"),
 label = c("a", "ab", "ab", "b"),
 y = c(6.5, 6.5, 6.5, 6.5)
 )
 
-# All taxa plot
 all_species_plot <- ggplot(data, aes(x = burn, y = number_of_species, fill = burn)) +
-geom_boxplot(outlier.shape = NA, alpha = 0.6, color = "black") +
-geom_jitter(position = position_jitter(width = 0.2, height = 0.2),
-shape = 21, color = "black", size = 1.5, alpha = 0.6, stroke = 0.4) +
-geom_text(data = cld_all, aes(x = burn, y = y, label = label),
-inherit.aes = FALSE, size = 5, fontface = "bold") +
-labs(x = "Burn Severity", y = "Species Count", title = "All Taxa") +
-scale_fill_manual(values = burn_colors_cb) +
-theme_minimal(base_size = 14) +
-theme(
-axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
-axis.text.y = element_text(face = "bold"),
-axis.title = element_text(face = "bold"),
-legend.position = "none",
-panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
-plot.title = element_text(face = "bold", size = 14, hjust = 0.5)
-)
+  geom_boxplot(outlier.shape = NA, alpha = 0.6, color = "black") +
+  geom_jitter(position = position_jitter(width = 0.2, height = 0.2),
+              shape = 21, color = "black", size = 1.5, alpha = 0.6, stroke = 0.4) +
+  geom_text(data = cld_all, aes(x = burn, y = y, label = label),
+            inherit.aes = FALSE, size = 5, fontface = "bold") +
+  labs(x = "Burn Severity", y = "Species Count", title = "All Taxa") +
+  scale_fill_manual(values = burn_colors_cb) +
+  coord_cartesian(ylim = c(0, 7)) + 
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 50, hjust = 1, face = "bold"),
+    axis.text.y = element_text(face = "bold"),
+    axis.title = element_text(face = "bold"),
+    legend.position = "none",
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5)
+  )
 
 all_species_plot
 ```
@@ -164,36 +179,36 @@ all_species_plot
 
 # Create CLD annotations
 cld_emf <- data.frame(
-burn = c("High", "Low (New)", "Never", "Low (Old)"),
+burn = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed"),
 label = c("a", "bc", "b", "c"),
 y = c(6.5, 6.5, 6.5, 6.5)
 )
 
-# EMF only plot
 emf_species_plot <- ggplot(data, aes(x = burn, y = emf_species, fill = burn)) +
-geom_boxplot(outlier.shape = NA, alpha = 0.6, color = "black") +
-geom_jitter(position = position_jitter(width = 0.2, height = 0.2),
-shape = 21, color = "black", size = 1.5, alpha = 0.6, stroke = 0.4) +
-geom_text(data = cld_emf, aes(x = burn, y = y, label = label),
-inherit.aes = FALSE, size = 5, fontface = "bold") +
-labs(x = "Burn Severity", y = "EMF Species Count", title = "EMF Taxa") +
-scale_fill_manual(values = burn_colors_cb) +
-theme_minimal(base_size = 14) +
-theme(
-axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
-axis.text.y = element_text(size = 14, face = "bold"),
-axis.title = element_text(size = 14, face = "bold"),
-legend.position = "none",
-panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
-plot.title = element_text(face = "bold", size = 14, hjust = 0.5)
-)
+  geom_boxplot(outlier.shape = NA, alpha = 0.6, color = "black") +
+  geom_jitter(position = position_jitter(width = 0.2, height = 0.2),
+              shape = 21, color = "black", size = 1.5, alpha = 0.6, stroke = 0.4) +
+  geom_text(data = cld_emf, aes(x = burn, y = y, label = label),
+            inherit.aes = FALSE, size = 5, fontface = "bold") +
+  labs(x = "Burn Severity", y = "EMF Species Count", title = "EMF Taxa") +
+  scale_fill_manual(values = burn_colors_cb) +
+  coord_cartesian(ylim = c(0, 7)) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 50, hjust = 1, face = "bold"),
+    axis.text.y = element_text(face = "bold"),
+    axis.title = element_text(face = "bold"),
+    legend.position = "none",
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5)
+  )
 
 emf_species_plot
 ```
 
 
 
-```{r final-combined-species-plot}
+```{r final-combined-species-plot, fig.width=12, fig.height=7}
 
 # Combine plots
 ## Figure 4: Species Richness
@@ -208,3 +223,5 @@ theme = theme(plot.tag = element_text(face = "bold", size = 16))
 combined_species_plot
 
 ```
+
+

@@ -16,6 +16,7 @@ library(dplyr)
 library(stringr)
 library(emmeans)
 library(multcompView)
+library(forcats)
 
 ```
 
@@ -130,79 +131,81 @@ summary(fvfm_burn_water)
 ```
 
 ## **4. Plot**
-```{r}
-# Clean and re-level burn severity labels
+```{r final-fvfm-plot, fig.width=12, fig.height=7}
+# Clean labels
 fvfm_data_clean$Water <- gsub("_", " ", fvfm_data_clean$Water)
-fvfm_data_clean$Burn_Severity <- gsub("_", " ", fvfm_data_clean$Burn_Severity)
-fvfm_data_clean$Burn_Severity <- case_when(
-  fvfm_data_clean$Burn_Severity == "High"     ~ "High",
-  fvfm_data_clean$Burn_Severity == "Never"    ~ "Never",
-  fvfm_data_clean$Burn_Severity == "Low Old"  ~ "Low (Old)",
-  fvfm_data_clean$Burn_Severity == "Low New"  ~ "Low (New)",
-  TRUE                                   ~ NA_character_
+fvfm_data_clean$Burn_Severity <- dplyr::case_when(
+  fvfm_data_clean$Burn_Severity == "High" ~ "High",
+  fvfm_data_clean$Burn_Severity == "Low New" ~ "Low (Initial)",
+  fvfm_data_clean$Burn_Severity == "Low Old" ~ "Low (Advanced)",
+  fvfm_data_clean$Burn_Severity == "Never" ~ "Suppressed",
+  TRUE ~ NA_character_
 )
 fvfm_data_clean$Burn_Severity <- factor(fvfm_data_clean$Burn_Severity,
-                                  levels = c("High", "Low (New)", "Low (Old)", "Never"))
-
-# Ensure correct factor levels for facets
+  levels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed")
+)
 fvfm_data_clean$Sterilization <- factor(fvfm_data_clean$Sterilization,
-                                  levels = c("Sterilized", "Unsterilized"))
+  levels = c("Sterilized", "Unsterilized")
+)
 
-# Colorblind-friendly palette
-cb_palette <- c("ABA" = "#E69F00", "Water Limitation" = "#009E73", "Moist" = "#56B4E9")
+# Color palette
+cb_palette <- c(
+  "ABA" = "#E69F00",
+  "Moist" = "#56B4E9",
+  "Water Limitation" = "#009E73"
+)
 
-# Add daggers to show significant difference between sterilized and unsterilized panels
+# Daggers — facet-specific
 dagger_df <- data.frame(
+  Burn_Severity = "Suppressed", 
+  Fv_Fm = 0.21,            
   Sterilization = c("Sterilized", "Unsterilized"),
   label = c("†", "††")
 )
 
-
-# Build plot
-## Figure 3: Fv/Fm
+# Plot
 fvfm_plot <- ggplot(fvfm_data_clean, aes(x = Burn_Severity, y = Fv_Fm, fill = Water)) +
   geom_boxplot(outlier.shape = 21, outlier.size = 2, color = "black") +
- geom_jitter(
-  aes(fill = Water),
-  shape = 21,
-  color = "black",
-  stroke = 0.4,
-  size = 2,
-  alpha = 0.6,
-  position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75)
-) +
+  geom_jitter(
+    shape = 21,
+    color = "black",
+    stroke = 0.4,
+    size = 2,
+    alpha = 0.6,
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75)
+  ) +
   scale_fill_manual(values = cb_palette) +
-  scale_color_manual(values = cb_palette) +
   facet_wrap(~ Sterilization) +
+  geom_text(
+    data = dagger_df,
+    aes(x = Burn_Severity, y = Fv_Fm, label = label),
+    inherit.aes = FALSE,
+    fontface = "bold",
+    size = 6
+  ) +
   labs(
     x = "Burn Severity",
     y = "Fv/Fm",
-    fill = "Water Treatment",
-    color = "Water Treatment"
+    fill = "Water Treatment"
   ) +
   theme_minimal(base_size = 14) +
   theme(
     axis.title = element_text(face = "bold"),
     axis.text = element_text(face = "bold"),
-    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1, face = "bold"),
     legend.title = element_text(face = "bold"),
     legend.text = element_text(face = "bold"),
     panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
     strip.background = element_blank(),
     strip.text = element_text(face = "bold"),
     plot.title = element_blank()
-  ) +
-  geom_text(
-    data = dagger_df,
-    mapping = aes(x = Inf, y = -Inf, label = label),
-    inherit.aes = FALSE,
-    size = 6,
-    hjust = 1.2,
-    vjust = -1
   )
 
-## Figure 3: Fv/Fm
 fvfm_plot
+
+ggsave( filename = "Figure2_fvfm.png",  plot = fvfm_plot, device = "png", width = 12, height = 6, units = "in", dpi = 600)
+
+ggsave( filename = "Figure2_fvfm.pdf",  plot = fvfm_plot, device = "png", width = 12, height = 6, units = "in")
 
 ```
 
