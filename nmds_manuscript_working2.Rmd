@@ -1,0 +1,2216 @@
+---
+title: "NMDS"
+author: "Dustin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+## **1. Load Data and Create Phyloseq Object**
+
+```{r libraries, include=FALSE}
+library(phyloseq)
+library(ggplot2)
+library(patchwork)
+library(vegan)
+library(ggtext)
+```
+
+
+```{r load-data,message=FALSE, warning=FALSE}
+
+# Set seed for reproducibility
+set.seed(42)
+
+# Load CSV files
+otu_table <- read.csv("otu_table_mycoinferno.csv", row.names = 1)
+taxonomy_table <- read.csv("tax_table_mycoinferno.csv", row.names = 1)
+metadata <- read.csv("metadata.csv", row.names = 1)
+
+# Clean factor levels
+metadata$burn_severity <- factor(
+  metadata$burn_severity,
+  levels = c("High", "Low_New", "Low_Old", "Never"),
+  labels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed")
+)
+
+table(metadata$burn_severity, useNA = "ifany")
+
+# Convert to phyloseq components
+OTU <- otu_table(as.matrix(otu_table), taxa_are_rows = TRUE)
+TAX <- tax_table(as.matrix(taxonomy_table))
+META <- sample_data(metadata)
+
+# Create phyloseq object
+physeq <- phyloseq(OTU, TAX, META)
+```
+
+
+## **2. Filter and Transform**
+```{r filter-and-transform}
+
+# ============================================================
+# A. ALL-TAXA DATASET
+# ============================================================
+
+# Exclude samples that produce a degenerate all-taxa NMDS
+problematic_samples_full <- c(
+  "Seedling248",
+  "Seedling243"
+)
+
+physeq_filtered_full <- phyloseq::prune_samples(
+  !phyloseq::sample_names(physeq) %in% problematic_samples_full,
+  physeq
+)
+
+# Convert counts within each sample to relative abundance
+physeq_all_transformed <- phyloseq::transform_sample_counts(
+  physeq_filtered_full,
+  function(x) {
+    if (sum(x) == 0) {
+      rep(0, length(x))
+    } else {
+      x / sum(x)
+    }
+  }
+)
+
+
+# ============================================================
+# B. EcM-ONLY DATASET
+# ============================================================
+
+# Start from the complete original phyloseq object.
+# Non-EcM OTUs are removed first, after which samples with
+# no remaining EcM observations are removed automatically.
+
+physeq_emf_unfiltered <- physeq
+
+
+# -----------------------------
+# Define non-EcM OTUs
+# -----------------------------
+
+# Names below exactly match fungal_taxon / taxa_names()
+# in the current OTU table.
+
+non_emf_taxa <- c(
+  "Exophiala_equina",
+  "Phialocephala_fortinii",
+  "Phialocephala_sp",
+  "Phialocephala_helvetica",
+  "Phialomyces_arenicola",
+  "Entoloma_sp",
+  "Paraphoma_fimeti",
+  "Eurotiales_sp",
+  "Ilyonectria_sp",
+  "Ilyonectria_destructans",
+  "Helotiales_sp",
+  "Leohumicola_minima",
+  "Leohumicola_sp",
+  "Myxomphalia_maura",
+  "Helotiaceae",
+  "Nectriaceae",
+  "Pyronema_sp"
+)
+
+
+# -----------------------------
+# Identify non-EcM OTUs
+# -----------------------------
+
+non_emf_otus <- phyloseq::taxa_names(
+  physeq_emf_unfiltered
+)[
+  phyloseq::taxa_names(physeq_emf_unfiltered) %in%
+    non_emf_taxa
+]
+
+
+# -----------------------------
+# Audit matching BEFORE filtering
+# -----------------------------
+
+cat("\nNon-EcM OTUs identified for removal:\n")
+print(non_emf_otus)
+
+cat(
+  "\nNumber of non-EcM OTUs identified:",
+  length(non_emf_otus),
+  "\n"
+)
+
+# Every OTU in the removal list should exist in the current OTU table.
+unmatched_non_emf <- setdiff(
+  non_emf_taxa,
+  phyloseq::taxa_names(physeq_emf_unfiltered)
+)
+
+cat("\nNon-EcM taxa that failed to match an OTU name:\n")
+print(unmatched_non_emf)
+
+# HARD STOP if any intended removal fails to match.
+stopifnot(length(unmatched_non_emf) == 0)
+
+# HARD STOP if the removal vector somehow matches nothing.
+stopifnot(length(non_emf_otus) > 0)
+
+
+# -----------------------------
+# Remove non-EcM OTUs
+# -----------------------------
+
+n_otus_before <- phyloseq::ntaxa(
+  physeq_emf_unfiltered
+)
+
+physeq_emf <- phyloseq::prune_taxa(
+  !phyloseq::taxa_names(physeq_emf_unfiltered) %in%
+    non_emf_otus,
+  physeq_emf_unfiltered
+)
+
+n_otus_after <- phyloseq::ntaxa(
+  physeq_emf
+)
+
+removed_non_emf_otus <- setdiff(
+  phyloseq::taxa_names(physeq_emf_unfiltered),
+  phyloseq::taxa_names(physeq_emf)
+)
+
+cat("\nOTUs before EcM filtering:", n_otus_before, "\n")
+cat("OTUs after EcM filtering:", n_otus_after, "\n")
+
+cat("\nOTUs actually removed:\n")
+print(removed_non_emf_otus)
+
+
+# -----------------------------
+# Hard checks on OTU filtering
+# -----------------------------
+
+# The OTUs actually removed must exactly equal
+# the OTUs designated as non-EcM.
+stopifnot(
+  setequal(
+    removed_non_emf_otus,
+    non_emf_otus
+  )
+)
+
+# No designated non-EcM OTU may remain.
+stopifnot(
+  !any(
+    phyloseq::taxa_names(physeq_emf) %in%
+      non_emf_taxa
+  )
+)
+
+
+# -----------------------------
+# Remove samples with zero
+# remaining EcM observations
+# -----------------------------
+
+samples_before_zero_pruning <- phyloseq::sample_names(
+  physeq_emf
+)
+
+physeq_emf <- phyloseq::prune_samples(
+  phyloseq::sample_sums(physeq_emf) > 0,
+  physeq_emf
+)
+
+samples_after_zero_pruning <- phyloseq::sample_names(
+  physeq_emf
+)
+
+zero_emf_samples <- setdiff(
+  samples_before_zero_pruning,
+  samples_after_zero_pruning
+)
+
+cat(
+  "\nSamples removed because no EcM observations remained:\n"
+)
+print(zero_emf_samples)
+
+
+# -----------------------------
+# Verify known zero-EcM samples
+# -----------------------------
+
+focal_emf_check <- c(
+  Seedling243 = "Seedling243" %in%
+    phyloseq::sample_names(physeq_emf),
+
+  Seedling248 = "Seedling248" %in%
+    phyloseq::sample_names(physeq_emf),
+
+  Seedling269 = "Seedling269" %in%
+    phyloseq::sample_names(physeq_emf)
+)
+
+cat("\nFocal-sample retention after EcM filtering:\n")
+print(focal_emf_check)
+
+# All three should be absent from the EcM dataset.
+stopifnot(
+  all(focal_emf_check == FALSE)
+)
+
+
+# -----------------------------
+# Transform EcM counts to
+# relative abundance
+# -----------------------------
+
+physeq_emf_transformed <- phyloseq::transform_sample_counts(
+  physeq_emf,
+  function(x) {
+    if (sum(x) == 0) {
+      rep(0, length(x))
+    } else {
+      x / sum(x)
+    }
+  }
+)
+
+
+# -----------------------------
+# Final EcM-object audit
+# -----------------------------
+
+cat(
+  "\nFinal EcM dataset:",
+  phyloseq::nsamples(physeq_emf_transformed),
+  "samples and",
+  phyloseq::ntaxa(physeq_emf_transformed),
+  "OTUs\n"
+)
+
+# No zero-sum samples should remain.
+stopifnot(
+  all(
+    phyloseq::sample_sums(
+      physeq_emf_transformed
+    ) > 0
+  )
+)
+
+# No designated non-EcM OTUs should remain.
+stopifnot(
+  !any(
+    phyloseq::taxa_names(
+      physeq_emf_transformed
+    ) %in%
+      non_emf_taxa
+  )
+)
+```
+
+## **3. Ordinate and Plot (w/ post-review diagnostics/changes**
+```{r ordinate and plot, fig.width=12, fig.height=6}
+
+# Run NMDS ordinations
+set.seed(42)
+
+nmds_all <- phyloseq::ordinate(
+  physeq_all_transformed,
+  method = "NMDS",
+  distance = "bray",
+  trymax = 200
+)
+
+set.seed(42)
+
+nmds_emf <- phyloseq::ordinate(
+  physeq_emf_transformed,
+  method = "NMDS",
+  distance = "bray",
+  trymax = 200
+)
+
+
+# Fit EcM taxa vectors to NMDS
+
+# Extract EcM OTU matrix
+emf_otu <- as(
+  phyloseq::otu_table(physeq_emf_transformed),
+  "matrix"
+)
+
+# Make samples rows and OTUs columns
+if (phyloseq::taxa_are_rows(physeq_emf_transformed)) {
+  emf_otu <- t(emf_otu)
+}
+
+# Ensure sample order matches the NMDS
+emf_otu <- emf_otu[
+  rownames(vegan::scores(nmds_emf, display = "sites")),
+  ,
+  drop = FALSE
+]
+
+# Fit OTUs to ordination
+set.seed(42)
+
+emf_vectors <- vegan::envfit(
+  nmds_emf,
+  emf_otu,
+  permutations = 9999
+)
+
+print(emf_vectors)
+
+# Fit genus-level EcM vectors to existing OTU-level NMDS
+
+
+# Extract EcM abundance matrix
+emf_otu <- as(
+  phyloseq::otu_table(physeq_emf_transformed),
+  "matrix"
+)
+
+# Make samples rows and OTUs columns
+if (phyloseq::taxa_are_rows(physeq_emf_transformed)) {
+  emf_otu <- t(emf_otu)
+}
+
+# Get taxonomy table for retained EcM OTUs
+emf_tax <- as(
+  phyloseq::tax_table(physeq_emf_transformed),
+  "matrix"
+)
+
+# Match taxonomy order to OTU columns
+emf_tax <- emf_tax[
+  colnames(emf_otu),
+  ,
+  drop = FALSE
+]
+
+# Inspect genus names before aggregation
+print(
+  unique(emf_tax[, "genus"])
+)
+
+# Replace blank genus entries with the OTU name
+# so higher-level identifications are not accidentally combined
+genus_names <- emf_tax[, "genus"]
+
+blank_genus <- is.na(genus_names) | genus_names == ""
+
+genus_names[blank_genus] <- colnames(emf_otu)[blank_genus]
+
+#Reclassify C. finlandica to Hyaloscypha for genus-level analysis
+genus_names[
+  colnames(emf_otu) == "Cadophora_finlandica"
+] <- "Hyaloscypha"
+
+
+# Check assignments
+print(
+  data.frame(
+    OTU = colnames(emf_otu),
+    genus_for_envfit = genus_names
+  )
+)
+
+# Aggregate OTU abundances by genus
+emf_genus <- sapply(
+  unique(genus_names),
+  function(g) {
+    rowSums(
+      emf_otu[
+        ,
+        genus_names == g,
+        drop = FALSE
+      ]
+    )
+  }
+)
+
+# Ensure matrix format
+emf_genus <- as.matrix(emf_genus)
+
+# Align sample order with NMDS
+emf_genus <- emf_genus[
+  rownames(vegan::scores(nmds_emf, display = "sites")),
+  ,
+  drop = FALSE
+]
+
+# Fit genus vectors to the existing EcM NMDS
+set.seed(42)
+
+emf_genus_vectors <- vegan::envfit(
+  nmds_emf,
+  emf_genus,
+  permutations = 9999
+)
+
+print(emf_genus_vectors)
+
+# Extract vector coordinates
+genus_vector_scores <- as.data.frame(
+  vegan::scores(
+    emf_genus_vectors,
+    display = "vectors"
+  )
+)
+
+# Add genus names
+genus_vector_scores$Genus <- rownames(genus_vector_scores)
+
+# Extract r-squared and raw permutation p-values
+genus_vector_scores$R2 <- emf_genus_vectors$vectors$r
+genus_vector_scores$p_raw <- emf_genus_vectors$vectors$pvals
+
+# FDR correction
+genus_vector_scores$p_FDR <- p.adjust(
+  genus_vector_scores$p_raw,
+  method = "BH"
+)
+
+# Reorder columns
+genus_vector_table <- genus_vector_scores[
+  ,
+  c(
+    "Genus",
+    "NMDS1",
+    "NMDS2",
+    "R2",
+    "p_raw",
+    "p_FDR"
+  )
+]
+
+# Sort by strongest association
+genus_vector_table <- genus_vector_table[
+  order(genus_vector_table$R2, decreasing = TRUE),
+]
+
+print(genus_vector_table)
+
+# Prepare significant genus vectors for EMF NMDS plot
+
+# Keep only genera significant after FDR correction
+emf_genus_vectors_plot <- genus_vector_table[
+  genus_vector_table$p_FDR < 0.05,
+  ,
+  drop = FALSE
+]
+
+# Check which genera will be plotted
+print(emf_genus_vectors_plot)
+
+# Scale arrows for visibility on the NMDS
+# Start with 3
+vector_multiplier <- 3
+
+emf_genus_vectors_plot$NMDS1_plot <-
+  emf_genus_vectors_plot$NMDS1 * vector_multiplier
+
+emf_genus_vectors_plot$NMDS2_plot <-
+  emf_genus_vectors_plot$NMDS2 * vector_multiplier
+
+# -----------------------------
+# Manual label offsets for EcM vectors
+# -----------------------------
+
+emf_genus_vectors_plot$label_nudge_x <- c(
+  Sebacina    = -0.15,
+  Rhizopogon  =  0.10,
+  Pustularia  = -0.10
+)[emf_genus_vectors_plot$Genus]
+
+emf_genus_vectors_plot$label_nudge_y <- c(
+  Sebacina    =  0.15,
+  Rhizopogon  =  0.15,
+  Pustularia  = -0.10
+)[emf_genus_vectors_plot$Genus]
+
+emf_genus_vectors_plot$label_x <-
+  emf_genus_vectors_plot$NMDS1_plot +
+  emf_genus_vectors_plot$label_nudge_x
+
+emf_genus_vectors_plot$label_y <-
+  emf_genus_vectors_plot$NMDS2_plot +
+  emf_genus_vectors_plot$label_nudge_y
+
+# ============================================================
+# Fit genus-level ALL-TAXA vectors to existing all-taxa NMDS
+# ============================================================
+
+# Extract all-taxa abundance matrix
+all_otu <- as(
+  phyloseq::otu_table(physeq_all_transformed),
+  "matrix"
+)
+
+# Make samples rows and OTUs columns
+if (phyloseq::taxa_are_rows(physeq_all_transformed)) {
+  all_otu <- t(all_otu)
+}
+
+# Match sample order to NMDS
+all_otu <- all_otu[
+  rownames(vegan::scores(nmds_all, display = "sites")),
+  ,
+  drop = FALSE
+]
+
+
+# -----------------------------
+# Get taxonomy information
+# -----------------------------
+
+all_tax <- as(
+  phyloseq::tax_table(physeq_all_transformed),
+  "matrix"
+)
+
+# Match taxonomy order to OTU columns
+all_tax <- all_tax[
+  colnames(all_otu),
+  ,
+  drop = FALSE
+]
+
+# Get genus assignments
+all_genus_names <- all_tax[, "genus"]
+
+# If genus is blank, retain the OTU name rather than
+# accidentally grouping unrelated higher-level taxa
+blank_all_genus <-
+  is.na(all_genus_names) | all_genus_names == ""
+
+all_genus_names[blank_all_genus] <-
+  colnames(all_otu)[blank_all_genus]
+
+
+# -----------------------------
+# Taxonomic synonym correction
+# for genus-level analysis only
+# -----------------------------
+
+# Cadophora finlandica is treated as Hyaloscypha
+all_genus_names[
+  colnames(all_otu) == "Cadophora_finlandica"
+] <- "Hyaloscypha"
+
+
+# Check genus assignments
+print(
+  data.frame(
+    OTU = colnames(all_otu),
+    genus_for_envfit = all_genus_names
+  )
+)
+
+
+# -----------------------------
+# Aggregate abundances by genus
+# -----------------------------
+
+all_genus <- sapply(
+  unique(all_genus_names),
+  function(g) {
+    rowSums(
+      all_otu[
+        ,
+        all_genus_names == g,
+        drop = FALSE
+      ]
+    )
+  }
+)
+
+all_genus <- as.matrix(all_genus)
+
+# Ensure sample order still matches NMDS
+all_genus <- all_genus[
+  rownames(vegan::scores(nmds_all, display = "sites")),
+  ,
+  drop = FALSE
+]
+
+
+# -----------------------------
+# Fit genus vectors
+# -----------------------------
+
+set.seed(42)
+
+all_genus_vectors <- vegan::envfit(
+  nmds_all,
+  all_genus,
+  permutations = 9999
+)
+
+print(all_genus_vectors)
+
+
+# -----------------------------
+# Extract vector results
+# -----------------------------
+
+all_genus_vector_scores <- as.data.frame(
+  vegan::scores(
+    all_genus_vectors,
+    display = "vectors"
+  )
+)
+
+all_genus_vector_scores$Genus <-
+  rownames(all_genus_vector_scores)
+
+all_genus_vector_scores$R2 <-
+  all_genus_vectors$vectors$r
+
+all_genus_vector_scores$p_raw <-
+  all_genus_vectors$vectors$pvals
+
+# FDR correction
+all_genus_vector_scores$p_FDR <- p.adjust(
+  all_genus_vector_scores$p_raw,
+  method = "BH"
+)
+
+# Create results table
+all_genus_vector_table <- all_genus_vector_scores[
+  ,
+  c(
+    "Genus",
+    "NMDS1",
+    "NMDS2",
+    "R2",
+    "p_raw",
+    "p_FDR"
+  )
+]
+
+# Sort strongest associations first
+all_genus_vector_table <- all_genus_vector_table[
+  order(
+    all_genus_vector_table$R2,
+    decreasing = TRUE
+  ),
+]
+
+print(all_genus_vector_table)
+
+
+# -----------------------------
+# Keep only significant genera
+# after FDR correction
+# -----------------------------
+
+all_genus_vectors_plot <- all_genus_vector_table[
+  all_genus_vector_table$p_FDR < 0.05,
+  ,
+  drop = FALSE
+]
+
+print(all_genus_vectors_plot)
+
+
+# -----------------------------
+# Scale vectors for plotting
+# -----------------------------
+
+all_vector_multiplier <- 3
+
+# IMPORTANT:
+# My plotted all-taxa NMDS reverses BOTH NMDS1 and NMDS2.
+# Therefore the vectors must be reversed on BOTH axes too.
+# This seems unnecessary, but not having it kept messing up the 
+# orientation of the centroids.
+
+all_genus_vectors_plot$NMDS1_plot <-
+  -all_genus_vectors_plot$NMDS1 *
+  all_vector_multiplier
+
+all_genus_vectors_plot$NMDS2_plot <-
+  -all_genus_vectors_plot$NMDS2 *
+  all_vector_multiplier
+
+# -----------------------------
+# Manual label offsets for all-taxa vectors
+# -----------------------------
+
+all_genus_vectors_plot$label_nudge_x <- c(
+  Ilyonectria = -0.15,
+  Rhizopogon  =  0.10,
+  Pustularia  =  0.00,
+  Leohumicola = -0.15
+)[all_genus_vectors_plot$Genus]
+
+all_genus_vectors_plot$label_nudge_y <- c(
+  Ilyonectria =  0.10,
+  Rhizopogon  =  0.10,
+  Pustularia  = -0.10,
+  Leohumicola = -0.10
+)[all_genus_vectors_plot$Genus]
+
+all_genus_vectors_plot$label_x <-
+  all_genus_vectors_plot$NMDS1_plot +
+  all_genus_vectors_plot$label_nudge_x
+
+all_genus_vectors_plot$label_y <-
+  all_genus_vectors_plot$NMDS2_plot +
+  all_genus_vectors_plot$label_nudge_y
+
+# Convert ordination output to data frames with metadata merged in
+ordination_df_all <- as.data.frame(scores(nmds_all, display = "sites"))
+ordination_df_all$sample <- rownames(ordination_df_all)
+ordination_df_all <- merge(ordination_df_all, as.data.frame(sample_data(physeq_all_transformed)), by.x = "sample", by.y = "row.names")
+
+ordination_df_emf <- as.data.frame(scores(nmds_emf, display = "sites"))
+ordination_df_emf$sample <- rownames(ordination_df_emf)
+ordination_df_emf <- merge(ordination_df_emf, as.data.frame(sample_data(physeq_emf_transformed)), by.x = "sample", by.y = "row.names")
+
+# ============================================================
+# DIAGNOSTIC: What taxa characterize positive NMDS2?
+# ============================================================
+
+library(dplyr)
+
+
+# 1. Rank EMF samples from highest to lowest NMDS2
+
+
+nmds2_ranked <- ordination_df_emf %>%
+  dplyr::arrange(desc(NMDS2)) %>%
+  dplyr::select(
+    sample,
+    burn_severity,
+    water,
+    NMDS1,
+    NMDS2
+  )
+
+print(nmds2_ranked)
+
+
+
+# 2. Look at the uppermost samples
+#
+# Start with the 10 samples having the highest NMDS2 scores.
+# This is diagnostic only
+
+
+upper_samples <- nmds2_ranked %>%
+  dplyr::slice_head(n = 10)
+
+print(upper_samples)
+
+
+
+# 3. Extract EMF abundances for those samples
+
+
+upper_sample_names <- upper_samples$sample
+
+upper_emf <- emf_otu[
+  upper_sample_names,
+  ,
+  drop = FALSE
+]
+
+
+
+# 4. Total abundance of each EMF OTU in the upper samples
+
+
+upper_taxa <- data.frame(
+  Taxon = colnames(upper_emf),
+  Upper_total = colSums(upper_emf)
+)
+
+upper_taxa <- upper_taxa %>%
+  dplyr::filter(Upper_total > 0) %>%
+  dplyr::arrange(desc(Upper_total))
+
+print(upper_taxa)
+
+
+
+# 5. Compare upper samples with all remaining EMF samples
+
+
+remaining_sample_names <- setdiff(
+  rownames(emf_otu),
+  upper_sample_names
+)
+
+remaining_emf <- emf_otu[
+  remaining_sample_names,
+  ,
+  drop = FALSE
+]
+
+taxon_comparison <- data.frame(
+  Taxon = colnames(emf_otu),
+
+  Upper_total = colSums(
+    emf_otu[upper_sample_names, , drop = FALSE]
+  ),
+
+  Other_total = colSums(
+    remaining_emf
+  ),
+
+  Upper_prevalence = colSums(
+    emf_otu[upper_sample_names, , drop = FALSE] > 0
+  ),
+
+  Other_prevalence = colSums(
+    remaining_emf > 0
+  )
+)
+
+
+# 6. Convert prevalence to proportions because the two
+# groups contain different numbers of seedlings
+
+taxon_comparison <- taxon_comparison %>%
+  dplyr::mutate(
+    Upper_prevalence_prop =
+      Upper_prevalence / length(upper_sample_names),
+
+    Other_prevalence_prop =
+      Other_prevalence / length(remaining_sample_names),
+
+    Prevalence_difference =
+      Upper_prevalence_prop - Other_prevalence_prop
+  ) %>%
+  dplyr::filter(
+    Upper_total > 0 | Other_total > 0
+  ) %>%
+  dplyr::arrange(
+    desc(Prevalence_difference)
+  )
+
+print(taxon_comparison)
+
+#----------------------------
+# NOW BUILD THE ACTUAL PLOT
+#----------------------------
+
+# Colors
+burn_colors_cb <- c(
+  "High"       = hcl(15,  75, 55),
+  "Low (Initial)"  = hcl(260, 60, 65),
+  "Low (Advanced)"  = hcl(75,  65, 75),
+  "Suppressed"      = hcl(330, 50, 70)
+)
+
+lims_x <- c(-4, 3)
+lims_y <- c(-3, 2)
+annotation_x <- 0.55
+annotation_y <- -2.75
+
+# Flip coordinates ONCE so both match direction
+
+ordination_df_emf$NMDS1 <- -ordination_df_emf$NMDS1
+ordination_df_all$NMDS2 <- -ordination_df_all$NMDS2
+
+
+# Flip NMDS1 for horizontal alignment
+ordination_df_all$NMDS1 <- -ordination_df_all$NMDS1
+ordination_df_emf$NMDS1 <- -ordination_df_emf$NMDS1
+
+# Fix factor levels
+ordination_df_all$burn_severity <- factor(trimws(ordination_df_all$burn_severity),
+  levels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed"))
+ordination_df_emf$burn_severity <- factor(trimws(ordination_df_emf$burn_severity),
+  levels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed"))
+
+# Convert "Drought" → "Water Limitation", preserve all valid entries 
+ordination_df_all$water <- factor(
+  dplyr::recode(
+    trimws(ordination_df_all$water),
+    "Drought" = "Water Limitation",
+    "Normal" = "Normal"
+  ),
+  levels = c("Water Limitation", "Normal")
+)
+
+ordination_df_emf$water <- factor(
+  dplyr::recode(trimws(ordination_df_emf$water),
+                "Drought" = "Water Limitation",
+                "Normal" = "Normal"),
+  levels = c("Water Limitation", "Normal")
+)
+
+
+# PLOT A: All Taxa
+
+p_all <- ggplot(
+  ordination_df_all,
+  aes(
+    NMDS1,
+    NMDS2,
+    color = burn_severity,
+    shape = water
+  )
+) +
+  geom_point(size = 3) +
+
+  # Genus vectors
+  geom_segment(
+    data = all_genus_vectors_plot,
+    aes(
+      x = 0,
+      y = 0,
+      xend = NMDS1_plot,
+      yend = NMDS2_plot
+    ),
+    inherit.aes = FALSE,
+    color = "black",
+    linewidth = 0.7,
+    arrow = grid::arrow(
+      length = grid::unit(0.18, "cm")
+    )
+  ) +
+
+  # Genus labels
+  geom_text(
+  data = all_genus_vectors_plot,
+  aes(
+    x = label_x,
+    y = label_y,
+    label = Genus
+  ),
+  inherit.aes = FALSE,
+  color = "black",
+  fontface = "italic",
+  size = 4.5
+) +
+
+  scale_color_manual(
+    name = "Burn Severity",
+    values = burn_colors_cb
+  ) +
+
+  scale_shape_manual(
+    name = "Water Treatment",
+    values = c(
+      "Normal" = 17,
+      "Water Limitation" = 16
+    ),
+    drop = FALSE
+  ) +
+
+  coord_cartesian(
+    xlim = lims_x,
+    ylim = lims_y,
+    expand = FALSE
+  ) +
+
+  annotate(
+    "richtext",
+    x = 0.5,
+    y = -3,
+    hjust = 0,
+    vjust = 0,
+    size = 4.5,
+    fill = NA,
+    label.color = NA,
+    label = paste0(
+      "<b>PERMANOVA</b><br>",
+      "Burn severity: <i>R</i><sup>2</sup> = 0.171, <i>p</i> = 0.0001***<br>",
+      "Water: <i>R</i><sup>2</sup> = 0.017, <i>p</i> = 0.663<br>",
+      "Dispersion: <i>p</i> = 0.183<br>",
+      "<i>Stress</i> = 0.075"
+    )
+  ) +
+
+  labs(
+    title = "All Taxa",
+    x = "NMDS1",
+    y = "NMDS2"
+  ) +
+
+  theme_minimal(base_size = 14) +
+
+  theme(
+  axis.title = element_text(face = "bold", size = 16),
+  axis.text = element_text(size = 13),
+  legend.title = element_text(face = "bold", size = 15),
+  legend.text = element_text(size = 13),
+  panel.border = element_rect(
+    color = "black",
+    fill = NA,
+    linewidth = 1
+  ),
+  plot.title = element_text(
+    face = "bold",
+    hjust = 0.5,
+    size = 18
+  ),
+  plot.margin = margin(
+    t = 10,
+    r = 10,
+    b = 10,
+    l = 10
+  ),
+  legend.position = "right"
+)
+
+p_all
+
+
+# PLOT B: EMF Only
+p_emf <- ggplot(
+  ordination_df_emf,
+  aes(
+    NMDS1,
+    NMDS2,
+    color = burn_severity,
+    shape = water
+  )
+) +
+  geom_point(size = 3) +
+
+  # Genus vectors
+  geom_segment(
+    data = emf_genus_vectors_plot,
+    aes(
+      x = 0,
+      y = 0,
+      xend = NMDS1_plot,
+      yend = NMDS2_plot
+    ),
+    inherit.aes = FALSE,
+    color = "black",
+    linewidth = 0.7,
+    arrow = grid::arrow(
+      length = grid::unit(0.18, "cm")
+    )
+  ) +
+
+  # Genus labels
+  geom_text(
+  data = emf_genus_vectors_plot,
+  aes(
+    x = label_x,
+    y = label_y,
+    label = Genus
+  ),
+  inherit.aes = FALSE,
+  color = "black",
+  fontface = "italic",
+  size = 4.5
+) +
+
+  scale_color_manual(
+    name = "Burn Severity",
+    values = burn_colors_cb
+  ) +
+
+  scale_shape_manual(
+    name = "Water Treatment",
+    values = c(
+      "Normal" = 17,
+      "Water Limitation" = 16
+    ),
+    drop = FALSE
+  ) +
+
+  coord_cartesian(
+    xlim = lims_x,
+    ylim = lims_y,
+    expand = FALSE
+  ) +
+
+  annotate(
+    "richtext",
+    x = 0.5,
+    y = -3,
+    hjust = 0,
+    vjust = 0,
+    size = 4.5,
+    fill = NA,
+    label.color = NA,
+    label = paste0(
+      "<b>PERMANOVA</b><br>",
+      "Burn severity: <i>R</i><sup>2</sup> = 0.167, <i>p</i> = 0.0005***<br>",
+      "Water: <i>R</i><sup>2</sup> = 0.020, <i>p</i> = 0.538<br>",
+      "Dispersion: <i>p</i> = 0.854<br>",
+      "<i>Stress</i> = 0.087"
+    )
+  ) +
+
+  labs(
+    title = "EMF Taxa",
+    x = "NMDS1",
+    y = "NMDS2"
+  ) +
+
+  theme_minimal(base_size = 14) +
+
+  theme(
+  axis.title = element_text(face = "bold", size = 16),
+  axis.text = element_text(size = 13),
+  legend.title = element_text(face = "bold", size = 15),
+  legend.text = element_text(size = 13),
+  panel.border = element_rect(
+    color = "black",
+    fill = NA,
+    linewidth = 1
+  ),
+  plot.title = element_text(
+    face = "bold",
+    hjust = 0.5,
+    size = 18
+  ),
+  plot.margin = margin(
+    t = 10,
+    r = 10,
+    b = 10,
+    l = 10
+  ),
+  legend.position = "right"
+)
+
+p_emf
+# COMBINE
+## Figure 5: NMDS
+final_nmds_plot <- (p_all + p_emf) +
+  plot_layout(ncol = 2, widths = c(1, 1), guides = "collect") +
+  plot_annotation(
+    tag_levels = "A",
+    theme = theme_minimal(base_size = 14) + theme(
+      plot.tag = element_text(face = "bold", size = 16),
+      plot.tag.position = c(0, 1),
+      plot.title = element_text(face = "bold", hjust = 0.5)
+    )
+  )
+
+# Figure 5
+final_nmds_plot
+
+
+
+
+```
+
+
+# **4. PERMANOVA for All Taxa**
+
+```{r permanova all}
+# Bray-Curtis distance matrix
+bray_dist <- phyloseq::distance(
+  physeq_all_transformed,
+  method = "bray"
+)
+
+# Extract metadata
+metadata <- as(
+  phyloseq::sample_data(physeq_all_transformed),
+  "data.frame"
+)
+
+# Explicitly align metadata with distance-matrix order
+metadata <- metadata[
+  labels(bray_dist),
+  ,
+  drop = FALSE
+]
+
+# Confirm alignment
+stopifnot(
+  identical(
+    rownames(metadata),
+    labels(bray_dist)
+  )
+)
+
+
+# -----------------------------
+# PERMANOVA: full model
+# -----------------------------
+
+set.seed(42)
+
+permanova_all_full <- vegan::adonis2(
+  bray_dist ~ burn_severity * water,
+  data = metadata,
+  permutations = 9999
+)
+
+print(permanova_all_full)
+
+
+# -----------------------------
+# PERMANOVA: burn severity
+# -----------------------------
+
+set.seed(42)
+
+permanova_all_burn <- vegan::adonis2(
+  bray_dist ~ burn_severity,
+  data = metadata,
+  permutations = 9999
+)
+
+print(permanova_all_burn)
+
+
+# -----------------------------
+# PERMANOVA: water treatment
+# -----------------------------
+
+set.seed(42)
+
+permanova_all_water <- vegan::adonis2(
+  bray_dist ~ water,
+  data = metadata,
+  permutations = 9999
+)
+
+print(permanova_all_water)
+
+
+# -----------------------------
+# Beta dispersion: burn severity
+# -----------------------------
+
+bd_burn <- vegan::betadisper(
+  bray_dist,
+  metadata$burn_severity
+)
+
+# Standard ANOVA
+print(
+  anova(bd_burn)
+)
+
+# Permutation test
+set.seed(42)
+
+print(
+  vegan::permutest(
+    bd_burn,
+    permutations = 9999
+  )
+)
+
+```
+
+
+# **5. PERMANOVA for EMF Taxa**
+```{r permanova emf}
+# Bray-Curtis distance matrix
+emf_bray <- phyloseq::distance(
+  physeq_emf_transformed,
+  method = "bray"
+)
+
+# Extract metadata
+emf_metadata <- as(
+  phyloseq::sample_data(physeq_emf_transformed),
+  "data.frame"
+)
+
+# Explicitly align metadata with distance-matrix order
+emf_metadata <- emf_metadata[
+  labels(emf_bray),
+  ,
+  drop = FALSE
+]
+
+# Confirm alignment
+stopifnot(
+  identical(
+    rownames(emf_metadata),
+    labels(emf_bray)
+  )
+)
+
+
+# -----------------------------
+# PERMANOVA: full model
+# -----------------------------
+
+set.seed(42)
+
+permanova_emf_full <- vegan::adonis2(
+  emf_bray ~ burn_severity * water,
+  data = emf_metadata,
+  permutations = 9999
+)
+
+print(permanova_emf_full)
+
+
+# -----------------------------
+# PERMANOVA: burn severity
+# -----------------------------
+
+set.seed(42)
+
+permanova_emf_burn <- vegan::adonis2(
+  emf_bray ~ burn_severity,
+  data = emf_metadata,
+  permutations = 9999
+)
+
+print(permanova_emf_burn)
+
+
+# -----------------------------
+# PERMANOVA: water treatment
+# -----------------------------
+
+set.seed(42)
+
+permanova_emf_water <- vegan::adonis2(
+  emf_bray ~ water,
+  data = emf_metadata,
+  permutations = 9999
+)
+
+print(permanova_emf_water)
+
+
+# -----------------------------
+# Beta dispersion: burn severity
+# -----------------------------
+
+emf_beta_disp <- vegan::betadisper(
+  emf_bray,
+  emf_metadata$burn_severity
+)
+
+# Standard ANOVA
+print(
+  anova(emf_beta_disp)
+)
+
+# Permutation test
+set.seed(42)
+
+print(
+  vegan::permutest(
+    emf_beta_disp,
+    permutations = 9999
+  )
+)
+
+```
+```{r}
+adonis2(
+  bray_dist ~ burn_severity * water,
+  data = metadata,
+  permutations = 9999,
+  by = "margin"
+)
+
+permanova_all_terms <- vegan::adonis2(
+  bray_dist ~ burn_severity * water,
+  data = metadata,
+  permutations = 9999,
+  by = "terms"
+)
+
+permanova_all_terms
+```
+
+
+# **6. Pairwise PERMANOVA by Burn Treatment**
+
+```{r}
+pairwise_permanova <- function(
+    physeq_object,
+    group_var = "burn_severity",
+    permutations = 9999,
+    p_adjust_method = "holm") {
+
+  # Extract metadata
+  sample_df <- as(
+    phyloseq::sample_data(physeq_object),
+    "data.frame"
+  )
+
+  # Drop unused treatment levels
+  sample_df[[group_var]] <- droplevels(
+    sample_df[[group_var]]
+  )
+
+  groups <- levels(
+    sample_df[[group_var]]
+  )
+
+  comparisons <- combn(
+    groups,
+    2,
+    simplify = FALSE
+  )
+
+  results <- lapply(
+    comparisons,
+    function(pair) {
+
+      # Identify samples belonging to the two treatments
+      samples_to_keep <- rownames(sample_df)[
+        sample_df[[group_var]] %in% pair
+      ]
+
+      # Subset phyloseq object
+      ps_pair <- phyloseq::prune_samples(
+        phyloseq::sample_names(physeq_object) %in%
+          samples_to_keep,
+        physeq_object
+      )
+
+      # Remove taxa absent from this pair
+      ps_pair <- phyloseq::prune_taxa(
+        phyloseq::taxa_sums(ps_pair) > 0,
+        ps_pair
+      )
+
+      # Recalculate Bray-Curtis for this pair
+      pair_dist <- phyloseq::distance(
+        ps_pair,
+        method = "bray"
+      )
+
+      # Extract metadata
+      pair_metadata <- as(
+        phyloseq::sample_data(ps_pair),
+        "data.frame"
+      )
+
+      # Align metadata with distance matrix
+      pair_metadata <- pair_metadata[
+        labels(pair_dist),
+        ,
+        drop = FALSE
+      ]
+
+      pair_metadata[[group_var]] <- droplevels(
+        pair_metadata[[group_var]]
+      )
+
+      # Confirm alignment
+      stopifnot(
+        identical(
+          rownames(pair_metadata),
+          labels(pair_dist)
+        )
+      )
+
+      # Construct formula from group_var
+      pair_formula <- stats::as.formula(
+        paste("pair_dist ~", group_var)
+      )
+
+      # Pairwise PERMANOVA
+      set.seed(42)
+
+      model <- vegan::adonis2(
+        pair_formula,
+        data = pair_metadata,
+        permutations = permutations
+      )
+
+      data.frame(
+        Group_1 = pair[1],
+        Group_2 = pair[2],
+        n_1 = sum(
+          pair_metadata[[group_var]] == pair[1]
+        ),
+        n_2 = sum(
+          pair_metadata[[group_var]] == pair[2]
+        ),
+        R2 = model$R2[1],
+        F = model$F[1],
+        p_raw = model$`Pr(>F)`[1]
+      )
+    }
+  )
+
+  results <- do.call(
+    rbind,
+    results
+  )
+
+  # Holm correction across the six pairwise comparisons
+  results$p_adjusted <- p.adjust(
+    results$p_raw,
+    method = p_adjust_method
+  )
+
+  results$significant <-
+    results$p_adjusted < 0.05
+
+  results
+}
+
+
+# -----------------------------
+# All fungal taxa
+# -----------------------------
+
+pairwise_all <- pairwise_permanova(
+  physeq_all_transformed,
+  permutations = 9999,
+  p_adjust_method = "holm"
+)
+
+print(pairwise_all)
+
+
+# -----------------------------
+# EcM taxa only
+# -----------------------------
+
+pairwise_emf <- pairwise_permanova(
+  physeq_emf_transformed,
+  permutations = 9999,
+  p_adjust_method = "holm"
+)
+
+print(pairwise_emf)
+
+```
+
+
+# **7. Exploratory NMDS Diagnostics**
+# This section does NOT modify objects used in the primary analysis.
+# It reconstructs an all-sample dataset solely to investigate why
+# Seedling243, Seedling248, and Seedling269 affect NMDS behavior.
+
+```{r exploratory-nmds-diagnostics}
+
+# -----------------------------
+# A. Recreate an ALL-SAMPLE transformed object
+# -----------------------------
+
+# Start from the original phyloseq object so no currently excluded
+# samples are removed.
+physeq_all_samples_transformed <- phyloseq::transform_sample_counts(
+  physeq,
+  function(x) {
+    if (sum(x) == 0) rep(0, length(x)) else x / sum(x)
+  }
+)
+
+# Problem samples of interest
+problem_samples <- c(
+  "Seedling243",
+  "Seedling248",
+  "Seedling269"
+)
+
+# Confirm that all three are present
+problem_samples %in% sample_names(physeq_all_samples_transformed)
+
+
+# -----------------------------
+# B. Calculate Bray-Curtis matrix
+# with ALL samples retained
+# -----------------------------
+
+bray_all_samples <- phyloseq::distance(
+  physeq_all_samples_transformed,
+  method = "bray"
+)
+
+bray_matrix_all <- as.matrix(bray_all_samples)
+
+# Check dimensions
+dim(bray_matrix_all)
+
+
+# -----------------------------
+# C. Inspect distances involving
+# the three suspect samples
+# -----------------------------
+
+problem_distance_matrix <- bray_matrix_all[
+  problem_samples,
+  ,
+  drop = FALSE
+]
+
+print(problem_distance_matrix)
+
+
+# -----------------------------
+# D. Mean and median dissimilarity
+# of every sample to all others
+# -----------------------------
+
+# Replace diagonal zero with NA so samples are not compared with themselves
+bray_no_diag <- bray_matrix_all
+diag(bray_no_diag) <- NA
+
+mean_dissimilarity <- rowMeans(
+  bray_no_diag,
+  na.rm = TRUE
+)
+
+median_dissimilarity <- apply(
+  bray_no_diag,
+  1,
+  median,
+  na.rm = TRUE
+)
+
+dissimilarity_summary <- data.frame(
+  sample = names(mean_dissimilarity),
+  mean_bray = mean_dissimilarity,
+  median_bray = median_dissimilarity
+)
+
+# Sort most isolated samples first
+dissimilarity_summary <- dissimilarity_summary[
+  order(dissimilarity_summary$mean_bray, decreasing = TRUE),
+]
+
+print(dissimilarity_summary)
+
+
+# -----------------------------
+# E. Count Bray-Curtis = 1.0
+# distances for each sample
+# -----------------------------
+
+max_distance_counts <- rowSums(
+  bray_matrix_all == 1
+)
+
+max_distance_summary <- data.frame(
+  sample = names(max_distance_counts),
+  n_distances_equal_1 = max_distance_counts
+)
+
+max_distance_summary <- max_distance_summary[
+  order(
+    max_distance_summary$n_distances_equal_1,
+    decreasing = TRUE
+  ),
+]
+
+print(max_distance_summary)
+
+
+# -----------------------------
+# F. Nearest and farthest neighbors
+# of suspect samples
+# -----------------------------
+
+for (s in problem_samples) {
+
+  x <- bray_matrix_all[s, ]
+
+  # Remove self-comparison
+  x <- x[names(x) != s]
+
+  cat("\n\n====================\n")
+  cat("Sample:", s, "\n")
+  cat("====================\n")
+
+  cat("\nNearest neighbors:\n")
+  print(head(sort(x), 10))
+
+  cat("\nFarthest neighbors:\n")
+  print(head(sort(x, decreasing = TRUE), 10))
+}
+
+
+# -----------------------------
+# G. Distances among the three
+# problem samples themselves
+# -----------------------------
+
+problem_to_problem <- bray_matrix_all[
+  problem_samples,
+  problem_samples,
+  drop = FALSE
+]
+
+print(problem_to_problem)
+
+
+# -----------------------------
+# H. Compare suspect samples with
+# the rest of the dataset
+# -----------------------------
+
+problem_summary <- dissimilarity_summary[
+  dissimilarity_summary$sample %in% problem_samples,
+]
+
+print(problem_summary)
+
+problem_maxdist_summary <- max_distance_summary[
+  max_distance_summary$sample %in% problem_samples,
+]
+
+print(problem_maxdist_summary)
+```
+
+
+# **8. Sensitivity Analyses: Isolated Samples**
+# These analyses DO NOT modify the primary NMDS or PERMANOVA objects.
+# They test whether retaining the taxonomically isolated samples changes
+# PERMANOVA or beta-dispersion inference.
+
+```{r}
+# ============================================================
+# A. ALL TAXA: retain Seedlings 243 and 248
+# ============================================================
+
+# Start with original phyloseq object containing all samples
+physeq_all_sensitivity <- phyloseq::transform_sample_counts(
+  physeq,
+  function(x) {
+    if (sum(x) == 0) rep(0, length(x)) else x / sum(x)
+  }
+)
+
+# Bray-Curtis distances
+bray_all_sensitivity <- phyloseq::distance(
+  physeq_all_sensitivity,
+  method = "bray"
+)
+
+# Metadata
+metadata_all_sensitivity <- as(
+  phyloseq::sample_data(physeq_all_sensitivity),
+  "data.frame"
+)
+
+# Align metadata order with distance matrix
+metadata_all_sensitivity <- metadata_all_sensitivity[
+  labels(bray_all_sensitivity),
+  ,
+  drop = FALSE
+]
+
+# Confirm alignment
+print(
+  all(
+    rownames(metadata_all_sensitivity) ==
+      labels(bray_all_sensitivity)
+  )
+)
+
+
+# -----------------------------
+# PERMANOVA: all taxa
+# -----------------------------
+
+set.seed(42)
+
+permanova_all_sensitivity <- vegan::adonis2(
+  bray_all_sensitivity ~ burn_severity * water,
+  data = metadata_all_sensitivity,
+  permutations = 9999
+)
+
+print(permanova_all_sensitivity)
+
+
+# Burn severity alone
+set.seed(42)
+
+permanova_all_burn_sensitivity <- vegan::adonis2(
+  bray_all_sensitivity ~ burn_severity,
+  data = metadata_all_sensitivity,
+  permutations = 9999
+)
+
+print(permanova_all_burn_sensitivity)
+
+
+# Water treatment alone
+set.seed(42)
+
+permanova_all_water_sensitivity <- vegan::adonis2(
+  bray_all_sensitivity ~ water,
+  data = metadata_all_sensitivity,
+  permutations = 9999
+)
+
+print(permanova_all_water_sensitivity)
+
+
+# -----------------------------
+# Beta dispersion: all taxa
+# -----------------------------
+
+bd_all_sensitivity <- vegan::betadisper(
+  bray_all_sensitivity,
+  metadata_all_sensitivity$burn_severity
+)
+
+# Same ANOVA-style test as current analysis
+print(anova(bd_all_sensitivity))
+
+# Permutation test as an additional check
+set.seed(42)
+
+print(
+  vegan::permutest(
+    bd_all_sensitivity,
+    permutations = 9999
+  )
+)
+
+
+# -----------------------------
+# Pairwise PERMANOVA: all taxa
+# -----------------------------
+
+pairwise_all_sensitivity <- pairwise_permanova(
+  physeq_all_sensitivity,
+  permutations = 9999,
+  p_adjust_method = "holm"
+)
+
+print(pairwise_all_sensitivity)
+
+
+
+# ============================================================
+# B. EMF SENSITIVITY ANALYSIS
+# Keep all samples initially.
+# Let samples with zero retained EMF taxa drop out naturally.
+# This should retain Seedling269 if Pyronema is classified as EMF.
+# ============================================================
+
+# Start from the ORIGINAL phyloseq object
+physeq_emf_sensitivity <- physeq
+
+
+# -----------------------------
+# Define non-EMF taxa
+# -----------------------------
+
+non_emf_taxa_sensitivity <- c(
+  "Exophiala_equina",
+  "Phialocephala_fortinii",
+  "Phialocephala_sp",
+  "Phialocephala_helvetica",
+  "Phialomyces_arenicola",
+  "Entoloma_sclerotiogenum",
+  "Paraphoma_fimeti",
+  "Ilyonectria_sp",
+  "Ilyonectria_destructans",
+  "Belonioscyphella_sp",
+  "Fusarium_sp",
+  "Leohumicola_minima",
+  "Myxomphalia_maura",
+  "Pyronema_sp"
+)
+
+
+# -----------------------------
+# Identify non-EMF OTUs
+# -----------------------------
+
+# OTU names correspond to the fungal_taxon identifiers
+non_emf_otus_sensitivity <- phyloseq::taxa_names(
+  physeq_emf_sensitivity
+)[
+  phyloseq::taxa_names(physeq_emf_sensitivity) %in%
+    non_emf_taxa_sensitivity
+]
+
+# Check which non-EMF taxa were actually present in this dataset
+print(non_emf_otus_sensitivity)
+print(length(non_emf_otus_sensitivity))
+
+# Optional diagnostic:
+# show any names in the non-EMF list that were not present as OTUs
+print(
+  setdiff(
+    non_emf_taxa_sensitivity,
+    phyloseq::taxa_names(physeq_emf_sensitivity)
+  )
+)
+
+
+# -----------------------------
+# Remove non-EMF OTUs
+# -----------------------------
+
+physeq_emf_sensitivity <- phyloseq::prune_taxa(
+  !phyloseq::taxa_names(physeq_emf_sensitivity) %in%
+    non_emf_otus_sensitivity,
+  physeq_emf_sensitivity
+)
+
+
+# -----------------------------
+# Remove samples with zero
+# remaining EMF observations
+# -----------------------------
+
+physeq_emf_sensitivity <- phyloseq::prune_samples(
+  phyloseq::sample_sums(physeq_emf_sensitivity) > 0,
+  physeq_emf_sensitivity
+)
+
+
+# -----------------------------
+# Confirm focal sample retention
+# -----------------------------
+
+print(
+  c(
+    Seedling243 = "Seedling243" %in%
+      phyloseq::sample_names(physeq_emf_sensitivity),
+
+    Seedling248 = "Seedling248" %in%
+      phyloseq::sample_names(physeq_emf_sensitivity),
+
+    Seedling269 = "Seedling269" %in%
+      phyloseq::sample_names(physeq_emf_sensitivity)
+  )
+)
+
+
+
+
+# -----------------------------
+# Transform to relative abundance
+# -----------------------------
+
+physeq_emf_sensitivity_transformed <-
+  phyloseq::transform_sample_counts(
+    physeq_emf_sensitivity,
+    function(x) {
+      if (sum(x) == 0) {
+        rep(0, length(x))
+      } else {
+        x / sum(x)
+      }
+    }
+  )
+
+
+# -----------------------------
+# Bray-Curtis distance matrix
+# -----------------------------
+
+emf_bray_sensitivity <- phyloseq::distance(
+  physeq_emf_sensitivity_transformed,
+  method = "bray"
+)
+
+
+# -----------------------------
+# Prepare metadata
+# -----------------------------
+
+emf_metadata_sensitivity <- as(
+  phyloseq::sample_data(
+    physeq_emf_sensitivity_transformed
+  ),
+  "data.frame"
+)
+
+# Align metadata order with distance matrix
+emf_metadata_sensitivity <- emf_metadata_sensitivity[
+  labels(emf_bray_sensitivity),
+  ,
+  drop = FALSE
+]
+
+# Confirm alignment
+print(
+  all(
+    rownames(emf_metadata_sensitivity) ==
+      labels(emf_bray_sensitivity)
+  )
+)
+
+
+# ============================================================
+# PERMANOVA: EMF
+# ============================================================
+
+# Full burn severity × water model
+set.seed(42)
+
+permanova_emf_sensitivity <- vegan::adonis2(
+  emf_bray_sensitivity ~ burn_severity * water,
+  data = emf_metadata_sensitivity,
+  permutations = 9999
+)
+
+print(permanova_emf_sensitivity)
+
+
+# Burn severity alone
+set.seed(42)
+
+permanova_emf_burn_sensitivity <- vegan::adonis2(
+  emf_bray_sensitivity ~ burn_severity,
+  data = emf_metadata_sensitivity,
+  permutations = 9999
+)
+
+print(permanova_emf_burn_sensitivity)
+
+
+# Water treatment alone
+set.seed(42)
+
+permanova_emf_water_sensitivity <- vegan::adonis2(
+  emf_bray_sensitivity ~ water,
+  data = emf_metadata_sensitivity,
+  permutations = 9999
+)
+
+print(permanova_emf_water_sensitivity)
+
+
+# ============================================================
+# Beta dispersion: EMF
+# ============================================================
+
+bd_emf_sensitivity <- vegan::betadisper(
+  emf_bray_sensitivity,
+  emf_metadata_sensitivity$burn_severity
+)
+
+# ANOVA-style test
+print(
+  anova(bd_emf_sensitivity)
+)
+
+# Permutation test
+set.seed(42)
+
+print(
+  vegan::permutest(
+    bd_emf_sensitivity,
+    permutations = 9999
+  )
+)
+
+
+# ============================================================
+# Pairwise PERMANOVA: EMF
+# ============================================================
+
+set.seed(42)
+
+pairwise_emf_sensitivity <- pairwise_permanova(
+  physeq_emf_sensitivity_transformed,
+  permutations = 9999,
+  p_adjust_method = "holm"
+)
+
+print(pairwise_emf_sensitivity)
+```
+
+
+# ============================================================
+# Small diagnostic:
+# Identify High-severity samples closest to the
+# Low (Initial) centroid in EcM NMDS space
+# ============================================================
+```{r}
+
+library(dplyr)
+
+# Calculate centroid of Low (Initial) samples
+low_initial_centroid <- ordination_df_emf %>%
+  dplyr::filter(burn_severity == "Low (Initial)") %>%
+  dplyr::summarise(
+    centroid_NMDS1 = mean(NMDS1),
+    centroid_NMDS2 = mean(NMDS2)
+  )
+
+print(low_initial_centroid)
+
+# Calculate distance of each High sample from that centroid
+high_to_low_initial <- ordination_df_emf %>%
+  dplyr::filter(burn_severity == "High") %>%
+  dplyr::mutate(
+    distance_to_low_initial_centroid = sqrt(
+      (NMDS1 - low_initial_centroid$centroid_NMDS1)^2 +
+      (NMDS2 - low_initial_centroid$centroid_NMDS2)^2
+    )
+  ) %>%
+  dplyr::arrange(distance_to_low_initial_centroid)
+
+# Show High samples from closest to farthest
+print(
+  high_to_low_initial %>%
+    dplyr::select(
+      sample,
+      NMDS1,
+      NMDS2,
+      distance_to_low_initial_centroid
+    )
+)
+
+# Just the two closest
+closest_two_high <- high_to_low_initial %>%
+  dplyr::slice_head(n = 2)
+
+print(closest_two_high$sample)
+```
+
+# **SAVE PLOTS**
+```{r}
+out_dir <- getwd()
+
+ggplot2::ggsave(
+  filename = file.path(out_dir, "Revised_AllTaxa_NMDS.tiff"),
+  plot = p_all,
+  width = 12,
+  height = 6,
+  units = "in",
+  dpi = 600,
+  compression = "lzw"
+)
+
+ggplot2::ggsave(
+  filename = file.path(out_dir, "Revised_AllTaxa_NMDS.png"),
+  plot = p_all,
+  width = 12,
+  height = 6,
+  units = "in",
+  dpi = 600
+)
+
+ggplot2::ggsave(
+  filename = file.path(out_dir, "Revised_EMF_NMDS.tiff"),
+  plot = p_emf,
+  width = 12,
+  height = 6,
+  units = "in",
+  dpi = 600,
+  compression = "lzw"
+)
+
+ggplot2::ggsave(
+  filename = file.path(out_dir, "Revised_EMF_NMDS.png"),
+  plot = p_emf,
+  width = 12,
+  height = 6,
+  units = "in",
+  dpi = 600
+)
+```
+

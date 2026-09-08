@@ -22,132 +22,153 @@ library(forcats)
 
 # **1. Load Data and Format x-Axis**
 ```{r load-data, message=FALSE, warning=FALSE}
-# Load the data
+# Load data
 fvfm_data <- read.csv("FvFm.csv")
 
-fvfm_data$Seedling = as.factor(fvfm_data$Seedling)
-fvfm_data$Sterilization = as.factor(fvfm_data$Sterilization)
-fvfm_data$Burn_Severity = as.factor(fvfm_data$Burn_Severity)
-fvfm_data$ABA_Concentration = as.factor(fvfm_data$ABA_Concentration)
+# Format variables
+fvfm_data$Seedling <- as.factor(fvfm_data$Seedling)
+fvfm_data$Sterilization <- factor(
+  fvfm_data$Sterilization,
+  levels = c("Sterilized", "Unsterilized")
+)
+fvfm_data$ABA_Concentration <- as.factor(fvfm_data$ABA_Concentration)
 
-# Remove underscores
+# Clean water-treatment labels
+fvfm_data$Water <- gsub("_", " ", fvfm_data$Water)
+fvfm_data$Water <- factor(
+  fvfm_data$Water,
+  levels = c("ABA", "Moist", "Water Limitation")
+)
+
+# Clean burn-history labels
 fvfm_data$Burn_Severity <- gsub("_", " ", fvfm_data$Burn_Severity)
 
-```
+fvfm_data$Burn_Severity <- dplyr::case_when(
+  fvfm_data$Burn_Severity == "High" ~ "High",
+  fvfm_data$Burn_Severity == "Low New" ~ "Low (Initial)",
+  fvfm_data$Burn_Severity == "Low Old" ~ "Low (Advanced)",
+  fvfm_data$Burn_Severity == "Never" ~ "Suppressed",
+  TRUE ~ NA_character_
+)
 
-## **2. Create model and transform**
-```{r}
+fvfm_data$Burn_Severity <- factor(
+  fvfm_data$Burn_Severity,
+  levels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed")
+)
+
 # Remove biologically impossible outlier
 fvfm_data_clean <- subset(fvfm_data, Fv_Fm > 0.1)
 
-# Transform data to stabilize variance
+# Transform Fv/Fm to stabilize variance
 fvfm_data_clean$Fv_Fm_asin <- asin(sqrt(fvfm_data_clean$Fv_Fm))
 
-# Refit model
-fvfm_model_clean <- lm(Fv_Fm_asin ~ Burn_Severity * Water * Sterilization, data = fvfm_data_clean)
 ```
 
-```{r diagnoistics, echo=TRUE, eval=TRUE, include=FALSE}
-# Check model assumptions after transformation
-pls205_diagnostics(fvfm_model_clean)
+## **2. Create model**
+```{r}
+# Full factorial model
+fvfm_model_full <- lm(
+  Fv_Fm_asin ~ Burn_Severity * Water * Sterilization,
+  data = fvfm_data_clean
+)
 
+# Evaluate three-way interaction
+drop1(fvfm_model_full, test = "F")
+
+# Model containing all two-way interactions
+fvfm_model_2way <- lm(
+  Fv_Fm_asin ~
+    Burn_Severity * Sterilization +
+    Burn_Severity * Water +
+    Sterilization * Water,
+  data = fvfm_data_clean
+)
+
+# Compare full and two-way models
+anova(fvfm_model_2way, fvfm_model_full)
+
+# Evaluate two-way interactions
+drop1(fvfm_model_2way, test = "F")
+
+# Additive model
+fvfm_model <- lm(
+  Fv_Fm_asin ~ Burn_Severity + Water + Sterilization,
+  data = fvfm_data_clean
+)
+
+# Compare additive and interaction models
+anova(fvfm_model, fvfm_model_2way)
+
+# Compare model fit
+AIC(fvfm_model_full, fvfm_model_2way, fvfm_model)
 ```
+
+## **Final model diagnostics and inference**
+```{r}
+# Check model assumptions
+pls205_diagnostics(fvfm_model)
+
+# Type II ANOVA
+car::Anova(fvfm_model, type = 2)
+```
+
 
 
 ## **3. Analyze data and calculate means**
 ```{r}
-# Run ANOVA on the transformed model
-anova(fvfm_model_clean)
+# Estimated marginal means
+burn_means <- emmeans(fvfm_model, ~ Burn_Severity)
+water_means <- emmeans(fvfm_model, ~ Water)
+ster_means <- emmeans(fvfm_model, ~ Sterilization)
 
-# Burn severity estimates
-burn_means <- emmeans(fvfm_model_clean, ~ Burn_Severity)
-burn_means
+# Pairwise comparisons
+pairs(burn_means, adjust = "tukey")
+pairs(water_means, adjust = "tukey")
+pairs(ster_means)
 
-# Drought estimates
-drought_means <- emmeans(fvfm_model_clean, ~ Water)
-drought_means
-
-# Sterilization estimates
-ster_means <- emmeans(fvfm_model_clean, ~ Sterilization)
-ster_means
-
-# Burn x Sterilization interaction
-burn_ster_means <- emmeans(fvfm_model_clean, ~ Burn_Severity * Sterilization)
-burn_ster_means
-
-#Back-transform
-burn_ster_means_df <- as.data.frame(burn_ster_means) |>
-  dplyr::mutate(
-    FvFm_estimate = (sin(emmean))^2,
-    lower_FvFm = (sin(lower.CL))^2,
-    upper_FvFm = (sin(upper.CL))^2
-  )
-
-
+# Back-transform estimated marginal means to original Fv/Fm scale
 burn_means_df <- as.data.frame(burn_means) |>
   dplyr::mutate(
-    FvFm_estimate = (sin(emmean))^2,
-    lower_FvFm = (sin(lower.CL))^2,
-    upper_FvFm = (sin(upper.CL))^2
+    FvFm_estimate = sin(emmean)^2,
+    lower_FvFm = sin(lower.CL)^2,
+    upper_FvFm = sin(upper.CL)^2
   )
 
-drought_means_df <- as.data.frame(drought_means) |>
+water_means_df <- as.data.frame(water_means) |>
   dplyr::mutate(
-    FvFm_estimate = (sin(emmean))^2,
-    lower_FvFm = (sin(lower.CL))^2,
-    upper_FvFm = (sin(upper.CL))^2
+    FvFm_estimate = sin(emmean)^2,
+    lower_FvFm = sin(lower.CL)^2,
+    upper_FvFm = sin(upper.CL)^2
   )
 
 ster_means_df <- as.data.frame(ster_means) |>
   dplyr::mutate(
-    FvFm_estimate = (sin(emmean))^2,
-    lower_FvFm = (sin(lower.CL))^2,
-    upper_FvFm = (sin(upper.CL))^2
+    FvFm_estimate = sin(emmean)^2,
+    lower_FvFm = sin(lower.CL)^2,
+    upper_FvFm = sin(upper.CL)^2
   )
 
-# Compare burn severity
-pairs(burn_means, adjust = "tukey")
-
-# Compare drought treatments
-pairs(drought_means, adjust = "tukey")
-
-# Compare sterilization means
-pairs(ster_means, adjust = "tukey")
-
-# Compare interaction effect means
-pairs(burn_ster_means, adjust = "tukey")
+burn_means_df
+water_means_df
+ster_means_df
 
 
 ```
 
 ```{r}
-#Emmeans
-fvfm_drought_means <- emmeans(fvfm_model_clean, ~ Water)
-summary(fvfm_drought_means)
+# Full factorial Fv/Fm model
 
-fvfm_burn_water <- emmeans(fvfm_model_clean, ~ Burn_Severity * Water)
-summary(fvfm_burn_water)
+summary(fvfm_model_full)
 
+# Sequential ANOVA
+anova(fvfm_model_full)
+
+joint_tests(fvfm_model_full)
 ```
+
 
 ## **4. Plot**
 ```{r final-fvfm-plot, fig.width=12, fig.height=7}
-# Clean labels
-fvfm_data_clean$Water <- gsub("_", " ", fvfm_data_clean$Water)
-fvfm_data_clean$Burn_Severity <- dplyr::case_when(
-  fvfm_data_clean$Burn_Severity == "High" ~ "High",
-  fvfm_data_clean$Burn_Severity == "Low New" ~ "Low (Initial)",
-  fvfm_data_clean$Burn_Severity == "Low Old" ~ "Low (Advanced)",
-  fvfm_data_clean$Burn_Severity == "Never" ~ "Suppressed",
-  TRUE ~ NA_character_
-)
-fvfm_data_clean$Burn_Severity <- factor(fvfm_data_clean$Burn_Severity,
-  levels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed")
-)
-fvfm_data_clean$Sterilization <- factor(fvfm_data_clean$Sterilization,
-  levels = c("Sterilized", "Unsterilized")
-)
-
 # Color palette
 cb_palette <- c(
   "ABA" = "#E69F00",
@@ -155,59 +176,99 @@ cb_palette <- c(
   "Water Limitation" = "#009E73"
 )
 
-# Daggers — facet-specific
-dagger_df <- data.frame(
-  Burn_Severity = "Suppressed", 
-  Fv_Fm = 0.21,            
-  Sterilization = c("Sterilized", "Unsterilized"),
-  label = c("†", "††")
-)
-
 # Plot
-fvfm_plot <- ggplot(fvfm_data_clean, aes(x = Burn_Severity, y = Fv_Fm, fill = Water)) +
-  geom_boxplot(outlier.shape = 21, outlier.size = 2, color = "black") +
+fvfm_plot <- ggplot(
+  fvfm_data_clean,
+  aes(x = Burn_Severity, y = Fv_Fm, fill = Water)
+) +
+  geom_boxplot(
+    outlier.shape = 21,
+    outlier.size = 1.5,
+    color = "black"
+  ) +
   geom_jitter(
     shape = 21,
     color = "black",
-    stroke = 0.4,
-    size = 2,
+    stroke = 0.3,
+    size = 1.6,
     alpha = 0.6,
-    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75)
+    position = position_jitterdodge(
+      jitter.width = 0.2,
+      dodge.width = 0.75
+    )
   ) +
   scale_fill_manual(values = cb_palette) +
   facet_wrap(~ Sterilization) +
-  geom_text(
-    data = dagger_df,
-    aes(x = Burn_Severity, y = Fv_Fm, label = label),
-    inherit.aes = FALSE,
-    fontface = "bold",
-    size = 6
-  ) +
   labs(
-    x = "Burn Severity",
+    x = "Fire History",
     y = "Fv/Fm",
     fill = "Water Treatment"
   ) +
-  theme_minimal(base_size = 14) +
+  coord_cartesian(
+    ylim = c(0.18, 0.84),
+    clip = "off"
+  ) +
+  theme_minimal(base_size = 12) +
   theme(
-    axis.title = element_text(face = "bold"),
-    axis.text = element_text(face = "bold"),
-    axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1, face = "bold"),
-    legend.title = element_text(face = "bold"),
-    legend.text = element_text(face = "bold"),
-    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    axis.title = element_text(
+      face = "bold",
+      size = 13
+    ),
+    axis.text = element_text(
+      size = 11
+    ),
+    axis.text.x = element_text(
+      angle = 50,
+      hjust = 1,
+      vjust = 1,
+      face = "bold"
+    ),
+    legend.title = element_text(
+      face = "bold",
+      size = 12
+    ),
+    legend.text = element_text(
+      size = 11
+    ),
+    panel.border = element_rect(
+      color = "black",
+      fill = NA,
+      linewidth = 0.8
+    ),
     strip.background = element_blank(),
-    strip.text = element_text(face = "bold"),
+    strip.text = element_text(
+      face = "bold",
+      size = 12
+    ),
     plot.title = element_blank()
   )
 
 fvfm_plot
 
-ggsave( filename = "Figure2_fvfm.png",  plot = fvfm_plot, device = "png", width = 12, height = 6, units = "in", dpi = 600)
-
-ggsave( filename = "Figure2_fvfm.pdf",  plot = fvfm_plot, device = "png", width = 12, height = 6, units = "in")
-
 ```
+
+## **Save plots**
+```{r}
+# Save PNG
+ggsave(
+  filename = "Figure2_fvfm_revised.png",
+  plot = fvfm_plot,
+  width = 12,
+  height = 6,
+  units = "in",
+  dpi = 600
+)
+
+# Save PDF
+ggsave(
+  filename = "Figure2_fvfm_revised.pdf",
+  plot = fvfm_plot,
+  width = 12,
+  height = 6,
+  units = "in"
+)
+```
+
 
 ## **5. ABA concentration analysis**
 ```{r}

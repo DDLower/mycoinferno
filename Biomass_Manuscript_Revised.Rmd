@@ -1,0 +1,1136 @@
+---
+title: "Biomass_Manuscript"
+author: "Dustin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup-libraries, include=FALSE}
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(multcomp)
+library(multcompView)
+library(colorspace)
+library(scales)
+library(patchwork)
+library(PLS205)
+library(car)
+```
+
+
+## **1. Load and Clean Data**
+```{r load-data, message=FALSE, warning=FALSE}
+biomass_data <- read.csv("biomass_data_manuscript.csv") %>%
+mutate(
+burn = factor(burn, levels = c("h", "ln", "lo", "n")),
+sterilization = factor(sterilization),
+drought = factor(drought, levels = c("full_water", "ABA", "primed")),
+plant_id = factor(plant_id),
+rack = factor(rack)
+)
+```
+
+
+## **2. Model Selection: Mixed vs Fixed Effects**
+```{r model-comparison}
+
+# Test model with rack as a random effect
+biomass_model_lmer <- lmer(dry_biomass ~ burn * sterilization * drought + (1 | rack), data = biomass_data)
+biomass_model_lm <- lm(dry_biomass ~ burn * sterilization * drought, data = biomass_data)
+anova(biomass_model_lmer, biomass_model_lm)
+```
+
+
+**We found that rack explained no significant variation in biomass (Chisq = 0, p = 1.000), so we used a fixed-effects model for final analyses.**
+
+## **3. Check Model Parameters**
+```{r}
+# Additive model
+m_add <- lm(
+  dry_biomass ~ burn + sterilization + drought,
+  data = biomass_data
+)
+
+# Burn × sterilization
+m_bs <- lm(
+  dry_biomass ~ burn * sterilization + drought,
+  data = biomass_data
+)
+
+# Burn × drought
+m_bd <- lm(
+  dry_biomass ~ burn * drought + sterilization,
+  data = biomass_data
+)
+
+# Sterilization × drought
+m_sd <- lm(
+  dry_biomass ~ sterilization * drought + burn,
+  data = biomass_data
+)
+
+# All two-way interactions
+m_2way <- lm(
+  dry_biomass ~ (burn + sterilization + drought)^2,
+  data = biomass_data
+)
+
+# Full factorial
+m_full <- lm(
+  dry_biomass ~ burn * sterilization * drought,
+  data = biomass_data
+)
+
+AIC(
+  m_add,
+  m_bs,
+  m_bd,
+  m_sd,
+  m_2way,
+  m_full
+)
+
+# AICc model comparison
+library(MuMIn)
+
+model_selection <- model.sel(
+  m_add,
+  m_bs,
+  m_bd,
+  m_sd,
+  m_2way,
+  m_full,
+  rank = "AICc"
+)
+
+print(model_selection)
+```
+
+
+## **4. Final Model and Summary**
+```{r final-model}
+
+# Full linear model without rack
+biomass_model <- lm(dry_biomass ~ burn * sterilization + drought, data = biomass_data)
+summary(biomass_model)
+
+
+```
+
+```{r diagnostics, echo=TRUE, eval=TRUE, include=FALSE}
+# Check model assumptions
+pls205_diagnostics(biomass_model)
+```
+
+
+
+## **5. ANOVA, Estimated Marginal Means and Group Comparisons**
+```{r emmeans-results}
+
+# ANOVA for selected biomass model
+anova(biomass_model)
+
+# EMMs for burn within each sterilization treatment
+burn_by_ster_emm <- emmeans(
+  biomass_model,
+  ~ burn | sterilization
+)
+
+# Print EMMs
+print(burn_by_ster_emm)
+
+# Pairwise burn comparisons within each sterilization treatment
+burn_by_ster_pairs <- pairs(
+  burn_by_ster_emm,
+  adjust = "bonferroni"
+)
+
+print(burn_by_ster_pairs)
+
+# Compact letter display for burn treatments within sterilization treatment
+burn_by_ster_cld <- cld(
+  burn_by_ster_emm,
+  adjust = "bonferroni",
+  Letters = letters
+)
+
+print(burn_by_ster_cld)
+
+
+# -----------------------------
+# Unsterilized soils only
+# -----------------------------
+
+unsterilized_emm <- emmeans(
+  biomass_model,
+  ~ burn,
+  at = list(sterilization = "unsterilized")
+)
+
+print(unsterilized_emm)
+
+unsterilized_pairs <- pairs(
+  unsterilized_emm,
+  adjust = "bonferroni"
+)
+
+print(unsterilized_pairs)
+
+unsterilized_cld <- cld(
+  unsterilized_emm,
+  adjust = "bonferroni",
+  Letters = letters
+)
+
+print(unsterilized_cld)
+
+
+# -----------------------------
+# Sterilized soils only
+# -----------------------------
+
+sterilized_emm <- emmeans(
+  biomass_model,
+  ~ burn,
+  at = list(sterilization = "sterilized")
+)
+
+print(sterilized_emm)
+
+sterilized_pairs <- pairs(
+  sterilized_emm,
+  adjust = "bonferroni"
+)
+
+print(sterilized_pairs)
+
+sterilized_cld <- cld(
+  sterilized_emm,
+  adjust = "bonferroni",
+  Letters = letters
+)
+
+print(sterilized_cld)
+
+```
+```{r}
+# EMMs for sterilization within each fire-history treatment
+ster_by_burn_emm <- emmeans(
+  biomass_model,
+  ~ sterilization | burn
+)
+
+print(ster_by_burn_emm)
+
+# Pairwise sterilization comparison within each fire history
+ster_by_burn_pairs <- pairs(
+  ster_by_burn_emm,
+  adjust = "bonferroni"
+)
+
+print(ster_by_burn_pairs)
+```
+
+
+## **6. Figure: Unsterilized Soils**
+```{r unsterilized-plot}
+
+# Colorblind-friendly palette 
+burn_colors_cb <- c(
+  "High" = hcl(15, 75, 55),
+  "Low (Initial)" = hcl(260, 60, 65),
+  "Low (Advanced)" = hcl(75, 65, 75),
+  "Suppressed" = hcl(330, 50, 70)
+)
+
+biomass_unsterilized <- biomass_data %>%
+  filter(sterilization == "unsterilized") %>%
+  mutate(
+    burn = dplyr::recode(
+      burn,
+      h = "High",
+      ln = "Low (Initial)",
+      lo = "Low (Advanced)",
+      n = "Suppressed"
+    ),
+    burn = factor(
+      burn,
+      levels = c(
+        "High",
+        "Low (Initial)",
+        "Low (Advanced)",
+        "Suppressed"
+      )
+    )
+  )
+
+# Prepare CLD labels from selected biomass model
+unsterilized_cld_plot <- unsterilized_cld %>%
+  mutate(
+    burn = dplyr::recode(
+      burn,
+      h = "High",
+      ln = "Low (Initial)",
+      lo = "Low (Advanced)",
+      n = "Suppressed"
+    ),
+    burn = factor(
+      burn,
+      levels = c(
+        "High",
+        "Low (Initial)",
+        "Low (Advanced)",
+        "Suppressed"
+      )
+    ),
+    .group = trimws(.group)
+  )
+
+# Shared y-axis range
+y_max <- max(biomass_data$dry_biomass, na.rm = TRUE)
+
+y_limits <- c(
+  0,
+  y_max + 0.08
+)
+
+# Position CLD letters above the data
+unsterilized_cld_plot$label_y <- y_max + 0.04
+
+# Plot unsterilized soil biomass
+final_burn_plot <- ggplot(
+  biomass_unsterilized,
+  aes(x = burn, y = dry_biomass, fill = burn)
+) +
+  geom_boxplot(
+    width = 0.6,
+    outlier.shape = NA,
+    alpha = 0.8,
+    color = "black"
+  ) +
+  geom_jitter(
+    width = 0.15,
+    size = 1.5,
+    shape = 21,
+    color = "black",
+    stroke = 0.3,
+    alpha = 0.6
+  ) +
+  geom_text(
+    data = unsterilized_cld_plot,
+    aes(x = burn, y = label_y, label = .group),
+    inherit.aes = FALSE,
+    fontface = "bold",
+    size = 5
+  ) +
+  scale_fill_manual(values = burn_colors_cb) +
+  coord_cartesian(ylim = y_limits) +
+  labs(
+    x = "Burn Severity",
+    y = "Dry Biomass (g)",
+    title = "Unsterilized Soils"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(
+      angle = 50,
+      hjust = 1,
+      face = "bold"
+    ),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 16
+    ),
+    panel.border = element_rect(
+      color = "black",
+      fill = NA,
+      linewidth = 1
+    ),
+    legend.position = "none"
+  )
+
+final_burn_plot
+```
+
+## **7. Figure: Sterilized Soils**
+```{r sterilized-plot}
+
+# Filter for sterilized soils only
+biomass_sterilized <- biomass_data %>%
+  filter(sterilization == "sterilized") %>%
+  mutate(
+    burn = dplyr::recode(
+      burn,
+      h = "High",
+      ln = "Low (Initial)",
+      lo = "Low (Advanced)",
+      n = "Suppressed"
+    ),
+    burn = factor(
+      burn,
+      levels = c(
+        "High",
+        "Low (Initial)",
+        "Low (Advanced)",
+        "Suppressed"
+      )
+    )
+  )
+
+# Prepare CLD labels from selected biomass model
+sterilized_cld_plot <- sterilized_cld %>%
+  mutate(
+    burn = dplyr::recode(
+      burn,
+      h = "High",
+      ln = "Low (Initial)",
+      lo = "Low (Advanced)",
+      n = "Suppressed"
+    ),
+    burn = factor(
+      burn,
+      levels = c(
+        "High",
+        "Low (Initial)",
+        "Low (Advanced)",
+        "Suppressed"
+      )
+    ),
+    .group = trimws(.group)
+  )
+
+# Position CLD letters
+sterilized_cld_plot$label_y <- y_max + 0.04
+
+# Plot biomass for sterilized soils
+plot_sterilized <- ggplot(
+  biomass_sterilized,
+  aes(x = burn, y = dry_biomass, fill = burn)
+) +
+  geom_boxplot(
+    width = 0.6,
+    outlier.shape = NA,
+    alpha = 0.8,
+    color = "black"
+  ) +
+  geom_jitter(
+    width = 0.15,
+    size = 1.5,
+    shape = 21,
+    color = "black",
+    stroke = 0.3,
+    alpha = 0.6
+  ) +
+  geom_text(
+    data = sterilized_cld_plot,
+    aes(x = burn, y = label_y, label = .group),
+    inherit.aes = FALSE,
+    fontface = "bold",
+    size = 5
+  ) +
+  scale_fill_manual(values = burn_colors_cb) +
+  coord_cartesian(ylim = y_limits) +
+  labs(
+    x = "Burn Severity",
+    y = "Dry Biomass (g)",
+    title = "Sterilized Soils"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(
+      angle = 50,
+      hjust = 1,
+      face = "bold"
+    ),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 16
+    ),
+    panel.border = element_rect(
+      color = "black",
+      fill = NA,
+      linewidth = 1
+    ),
+    legend.position = "none"
+  )
+
+plot_sterilized
+```
+
+
+## **8. Combined Figure**
+```{r combined-plot, fig.width=12, fig.height=7}
+# Figure 1: Biomass
+combined_biomass_plot <- final_burn_plot + plot_sterilized +
+  plot_layout(nrow = 1, guides = "collect")
+
+combined_biomass_plot
+```
+
+
+
+## **9. Revised Figure 1: Sterilized and Unsterilized Side-by-Side**
+
+```{r, fig.width=13.33, fig.height=7.5}
+
+## with model-derived CLD letters
+
+# Prepare plotting data
+biomass_combined <- biomass_data %>%
+  mutate(
+    burn = dplyr::recode(
+      burn,
+      h = "High",
+      ln = "Low (Initial)",
+      lo = "Low (Advanced)",
+      n = "Suppressed"
+    ),
+    burn = factor(
+      burn,
+      levels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed")
+    ),
+    sterilization = dplyr::recode(
+      sterilization,
+      sterilized = "Sterilized",
+      unsterilized = "Unsterilized"
+    ),
+    sterilization = factor(
+      sterilization,
+      levels = c("Unsterilized", "Sterilized")
+    )
+  )
+
+# Prepare CLD labels for unsterilized soils only
+cld_unsterilized_plot <- burn_by_ster_cld %>%
+  as.data.frame() %>%
+  filter(sterilization == "unsterilized") %>%
+  mutate(
+    burn = dplyr::recode(
+      burn,
+      h = "High",
+      ln = "Low (Initial)",
+      lo = "Low (Advanced)",
+      n = "Suppressed"
+    ),
+    burn = factor(
+      burn,
+      levels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed")
+    ),
+    .group = trimws(.group),
+    label_y = 0.69
+  )
+
+# Revised Figure 1
+revised_biomass_plot <- ggplot(
+  biomass_combined,
+  aes(
+    x = burn,
+    y = dry_biomass,
+    fill = burn,
+    group = interaction(burn, sterilization)
+  )
+) +
+  geom_boxplot(
+    aes(alpha = sterilization),
+    position = position_dodge(width = 0.75),
+    width = 0.65,
+    outlier.shape = NA,
+    color = "black",
+    linewidth = 0.6
+  ) +
+  geom_point(
+    aes(shape = sterilization),
+    position = position_jitterdodge(
+      jitter.width = 0.12,
+      dodge.width = 0.75
+    ),
+    size = 1.6,
+    color = "black",
+    stroke = 0.3
+  ) +
+  geom_text(
+    data = cld_unsterilized_plot,
+    aes(
+      x = burn,
+      y = label_y,
+      label = .group,
+      group = sterilization
+    ),
+    position = position_dodge(width = 0.75),
+    inherit.aes = FALSE,
+    fontface = "bold",
+    size = 5
+  ) +
+  scale_fill_manual(
+    values = burn_colors_cb,
+    guide = "none"
+  ) +
+  scale_alpha_manual(
+    values = c(
+      "Unsterilized" = 0.85,
+      "Sterilized" = 0.40
+    ),
+    guide = "none"
+  ) +
+  scale_shape_manual(
+    values = c(
+      "Unsterilized" = 21,
+      "Sterilized" = 24
+    ),
+    name = "Soil Sterilization"
+  ) +
+  labs(
+    x = "Burn Severity",
+    y = "Dry Biomass (g)"
+  ) +
+  coord_cartesian(
+    ylim = c(0, 0.72)
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(
+      angle = 50,
+      hjust = 1,
+      face = "bold",
+      margin = margin(t = 18)
+    ),
+    axis.title = element_text(face = "bold"),
+    panel.border = element_rect(
+      color = "black",
+      fill = NA,
+      linewidth = 1
+    ),
+    legend.position = "right",
+    legend.title = element_text(face = "bold")
+  )
+
+revised_biomass_plot
+```
+```{r}
+ggsave(
+  filename = "Figure1_revised_biomass.png",
+  plot = revised_biomass_plot,
+  width = 13.33,
+  height = 7.5,
+  units = "in",
+  dpi = 300
+)
+```
+
+```{r}
+library(dplyr)       # needed for %>%
+library(ggplot2)
+library(emmeans)
+library(multcomp)
+library(multcompView)
+
+# Full three-way interaction model
+biomass_model_3way <- lm(
+  dry_biomass ~ burn * sterilization * drought,
+  data = biomass_data
+)
+
+anova(biomass_model_3way)
+
+# EMMs for all 24 burn × sterilization × drought combinations
+biomass_3way_emm <- emmeans(
+  biomass_model_3way,
+  ~ burn * sterilization * drought
+)
+
+# CLDs across all 24 combinations
+biomass_3way_cld <- multcomp::cld(
+  biomass_3way_emm,
+  adjust = "bonferroni",
+  Letters = letters,
+  sort = FALSE
+) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+
+print(biomass_3way_cld)
+
+
+# ------------------------------------------------------------
+# Prepare raw data
+# ------------------------------------------------------------
+
+biomass_3way_data <- biomass_data %>%
+  mutate(
+    burn = dplyr::recode(
+      burn,
+      h  = "High",
+      ln = "Low (Initial)",
+      lo = "Low (Advanced)",
+      n  = "Suppressed"
+    ),
+    burn = factor(
+      burn,
+      levels = c(
+        "High",
+        "Low (Initial)",
+        "Low (Advanced)",
+        "Suppressed"
+      )
+    ),
+
+    sterilization = dplyr::recode(
+      sterilization,
+      sterilized   = "Sterilized",
+      unsterilized = "Unsterilized"
+    ),
+    sterilization = factor(
+      sterilization,
+      levels = c("Unsterilized", "Sterilized")
+    ),
+
+    drought = dplyr::recode(
+      drought,
+      control = "Control",
+      ABA     = "ABA",
+      primed  = "Drought-primed"
+    ),
+    drought = factor(
+      drought,
+      levels = c("Control", "ABA", "Drought-primed")
+    )
+  )
+
+
+# ------------------------------------------------------------
+# Prepare CLD data
+# ------------------------------------------------------------
+
+biomass_3way_cld_plot <- biomass_3way_cld %>%
+  mutate(
+    burn = dplyr::recode(
+      burn,
+      h  = "High",
+      ln = "Low (Initial)",
+      lo = "Low (Advanced)",
+      n  = "Suppressed"
+    ),
+    burn = factor(
+      burn,
+      levels = c(
+        "High",
+        "Low (Initial)",
+        "Low (Advanced)",
+        "Suppressed"
+      )
+    ),
+
+    sterilization = dplyr::recode(
+      sterilization,
+      sterilized   = "Sterilized",
+      unsterilized = "Unsterilized"
+    ),
+    sterilization = factor(
+      sterilization,
+      levels = c("Unsterilized", "Sterilized")
+    ),
+
+    drought = dplyr::recode(
+      drought,
+      control = "Control",
+      ABA     = "ABA",
+      primed  = "Drought-primed"
+    ),
+    drought = factor(
+      drought,
+      levels = c("Control", "ABA", "Drought-primed")
+    )
+  ) %>%
+  left_join(
+    biomass_3way_data %>%
+      group_by(burn, sterilization, drought) %>%
+      summarise(
+        group_max = max(dry_biomass, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("burn", "sterilization", "drought")
+  ) %>%
+  mutate(label_y = group_max + 0.035)
+
+
+# ------------------------------------------------------------
+# Colors
+# ------------------------------------------------------------
+
+burn_colors_cb <- c(
+  "High"           = hcl(15, 75, 55),
+  "Low (Initial)"  = hcl(260, 60, 65),
+  "Low (Advanced)" = hcl(75, 65, 75),
+  "Suppressed"     = hcl(330, 50, 70)
+)
+
+
+# ------------------------------------------------------------
+# Full three-way interaction plot
+# ------------------------------------------------------------
+
+dodge_width <- 0.75
+
+biomass_3way_plot <- ggplot(
+  biomass_3way_data,
+  aes(
+    x = burn,
+    y = dry_biomass,
+    fill = burn,
+    group = interaction(burn, sterilization)
+  )
+) +
+  geom_boxplot(
+    aes(alpha = sterilization),
+    position = position_dodge(width = dodge_width),
+    width = 0.65,
+    outlier.shape = NA,
+    color = "black",
+    linewidth = 0.6
+  ) +
+  geom_point(
+    aes(shape = sterilization),
+    position = position_jitterdodge(
+      jitter.width = 0.12,
+      dodge.width = dodge_width
+    ),
+    size = 1.6,
+    color = "black",
+    stroke = 0.3
+  ) +
+  geom_text(
+    data = biomass_3way_cld_plot,
+    aes(
+      x = burn,
+      y = label_y,
+      label = .group,
+      group = sterilization
+    ),
+    position = position_dodge(width = dodge_width),
+    inherit.aes = FALSE,
+    fontface = "bold",
+    size = 4
+  ) +
+  facet_wrap(
+    ~ drought,
+    nrow = 1
+  ) +
+  scale_fill_manual(
+    values = burn_colors_cb,
+    guide = "none"
+  ) +
+  scale_alpha_manual(
+    values = c(
+      "Unsterilized" = 0.85,
+      "Sterilized"   = 0.40
+    ),
+    guide = "none"
+  ) +
+  scale_shape_manual(
+    values = c(
+      "Unsterilized" = 21,
+      "Sterilized"   = 24
+    ),
+    name = "Soil Treatment"
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0.02, 0.15))
+  ) +
+  labs(
+    x = "Burn Severity",
+    y = "Dry Biomass (g)"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(
+      angle = 50,
+      hjust = 1,
+      face = "bold"
+    ),
+    axis.title = element_text(face = "bold"),
+    strip.text = element_text(
+      face = "bold",
+      size = 13
+    ),
+    panel.border = element_rect(
+      color = "black",
+      fill = NA,
+      linewidth = 1
+    ),
+    legend.position = "right",
+    legend.title = element_text(face = "bold"),
+    plot.margin = margin(10, 20, 10, 10)
+  )
+
+biomass_3way_plot
+```
+
+```{r}
+# Full model -- separate object; does not overwrite established analysis
+biomass_model_fullplot_test <- lm(
+  dry_biomass ~ burn * sterilization * drought,
+  data = biomass_data
+)
+
+# Burn × Sterilization marginal means from full model
+biomass_bs_emm_fullplot_test <- emmeans(
+  biomass_model_fullplot_test,
+  ~ burn * sterilization
+)
+
+biomass_bs_emm_fullplot_test
+
+# All eight Burn × Sterilization comparisons
+biomass_bs_pairs_fullplot_test <- pairs(
+  biomass_bs_emm_fullplot_test,
+  adjust = "tukey"
+)
+
+biomass_bs_pairs_fullplot_test
+
+# CLDs for the eight groups
+biomass_bs_cld_fullplot_test <- multcomp::cld(
+  biomass_bs_emm_fullplot_test,
+  adjust = "tukey",
+  Letters = letters,
+  sort = FALSE
+)
+
+biomass_bs_cld_fullplot_test
+
+anova(biomass_model_fullplot_test)
+```
+```{r}
+# Sterilization EMMs within each Fire History
+ster_by_burn_fulltest <- emmeans(
+  biomass_model_fullplot_test,
+  ~ sterilization | burn
+)
+
+ster_by_burn_fulltest
+
+# Generate the four sterilization contrasts
+ster_by_burn_contrasts_fulltest <- contrast(
+  ster_by_burn_fulltest,
+  method = "revpairwise",
+  adjust = "none"
+)
+
+# Adjust the FOUR contrasts together as one family
+summary(
+  ster_by_burn_contrasts_fulltest,
+  by = NULL,
+  adjust = "holm"
+)
+```
+
+
+```{r}
+# ------------------------------------------------------------
+# Prepare plotting data
+# ------------------------------------------------------------
+
+biomass_plot_data_full <- biomass_data %>%
+  mutate(
+    burn = dplyr::recode(
+      burn,
+      h  = "High",
+      ln = "Low (Initial)",
+      lo = "Low (Advanced)",
+      n  = "Suppressed"
+    ),
+    burn = factor(
+      burn,
+      levels = c(
+        "High",
+        "Low (Initial)",
+        "Low (Advanced)",
+        "Suppressed"
+      )
+    ),
+
+    sterilization = dplyr::recode(
+      sterilization,
+      sterilized   = "Sterilized",
+      unsterilized = "Unsterilized"
+    ),
+    sterilization = factor(
+      sterilization,
+      levels = c("Unsterilized", "Sterilized")
+    )
+  )
+
+
+# ------------------------------------------------------------
+# Prepare CLDs from FULL 3-way model
+# averaged across drought
+# ------------------------------------------------------------
+
+biomass_cld_plot_full <- biomass_bs_cld_fullplot_test %>%
+  as.data.frame() %>%
+  mutate(
+    burn = dplyr::recode(
+      burn,
+      h  = "High",
+      ln = "Low (Initial)",
+      lo = "Low (Advanced)",
+      n  = "Suppressed"
+    ),
+    burn = factor(
+      burn,
+      levels = c(
+        "High",
+        "Low (Initial)",
+        "Low (Advanced)",
+        "Suppressed"
+      )
+    ),
+
+    sterilization = dplyr::recode(
+      sterilization,
+      sterilized   = "Sterilized",
+      unsterilized = "Unsterilized"
+    ),
+    sterilization = factor(
+      sterilization,
+      levels = c("Unsterilized", "Sterilized")
+    ),
+
+    .group = trimws(.group)
+  ) %>%
+
+  # Stagger letters according to the observed height of each box
+  left_join(
+    biomass_plot_data_full %>%
+      group_by(burn, sterilization) %>%
+      summarise(
+        group_max = max(dry_biomass, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("burn", "sterilization")
+  ) %>%
+
+  mutate(
+    label_y = group_max + 0.035
+  )
+
+
+# ------------------------------------------------------------
+# Plot
+# ------------------------------------------------------------
+
+dodge_width <- 0.75
+
+biomass_2way_plot <- ggplot(
+  biomass_plot_data_full,
+  aes(
+    x = burn,
+    y = dry_biomass,
+    fill = sterilization,
+    group = interaction(burn, sterilization)
+  )
+) +
+  geom_boxplot(
+    position = position_dodge(width = dodge_width),
+    width = 0.65,
+    outlier.shape = NA,
+    color = "black",
+    linewidth = 0.6
+  ) +
+  geom_point(
+    aes(shape = sterilization),
+    position = position_jitterdodge(
+      jitter.width = 0.10,
+      dodge.width = dodge_width
+    ),
+    size = 1.6,
+    color = "black",
+    alpha = 0.65,
+    stroke = 0.3
+  ) +
+  geom_text(
+    data = biomass_cld_plot_full,
+    aes(
+      x = burn,
+      y = label_y,
+      label = .group,
+      group = sterilization
+    ),
+    position = position_dodge(width = dodge_width),
+    inherit.aes = FALSE,
+    fontface = "bold",
+    size = 5
+  ) +
+  scale_fill_manual(
+    values = sterilization_colors,
+    name = "Soil Sterilization"
+  ) +
+  scale_shape_manual(
+    values = c(
+      "Unsterilized" = 21,
+      "Sterilized"   = 24
+    ),
+    name = "Soil Sterilization"
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0.02, 0.14))
+  ) +
+  labs(
+    x = "Fire History",
+    y = "Dry Biomass (g)"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      face = "bold"
+    ),
+    axis.title = element_text(face = "bold"),
+    panel.border = element_rect(
+      color = "black",
+      fill = NA,
+      linewidth = 1
+    ),
+    legend.position = "right",
+    legend.title = element_text(face = "bold"),
+    plot.margin = margin(10, 20, 10, 10)
+  )
+
+biomass_2way_plot
+```
+
+```{r}
+ggsave(
+  "Figure_Biomass_Interaction.png",
+  plot = biomass_2way_plot,
+  width = 12,
+  height = 7,
+  units = "in",
+  dpi = 600
+)
+
+ggsave(
+  "Figure_Biomass_Interaction.pdf",
+  plot = biomass_2way_plot,
+  width = 12,
+  height = 7,
+  units = "in"
+)
+```
+
