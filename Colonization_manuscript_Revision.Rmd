@@ -66,13 +66,11 @@ colonization_transformed <- colonization_filtered %>%
 ```
 
 
-```{r diagnostics, echo=TRUE, eval=TRUE, include=FALSE}
+```{r transformed model, echo=TRUE, eval=TRUE, include=FALSE}
 
 # Final full model for diagnostics (after filtering to unsterilized samples)
 col_model_trans <- lm(perc_col_asin ~ burn * drought, data = colonization_transformed)
 
-# Check model assumptions
-pls205_diagnostics(col_model_trans)
 ```
 
 ```{r}
@@ -151,48 +149,87 @@ col_model_simple <- lm(
   data = colonization_transformed
 )
 
+# Diagnostics for FINAL colonization model
+pls205_diagnostics(col_model_simple)
+
+# Test homogeneity of variance among fire-history treatments
+car::leveneTest(
+  perc_col_asin ~ burn,
+  data = colonization_transformed,
+  center = median
+)
+
 # ANOVA for final model
 anova(col_model_simple)
 
-# Get estimated marginal means
+# Estimated marginal means
 em <- emmeans(col_model_simple, ~ burn)
 
-# Get pairwise comparisons
-pairwise <- contrast(em, method = "pairwise", adjust = "none")
-
-# Get the summary and clean the names
-pw_summary <- summary(pairwise)
-
-# Keep only one direction of each contrast
-pvals_named <- pw_summary$p.value
-names(pvals_named) <- gsub(" - ", "-", pw_summary$contrast)
-pvals_named <- pvals_named[!duplicated(names(pvals_named))]
-
-# Create compact letters
-letter_obj <- multcompLetters(pvals_named, threshold = 0.05)
-
-# Print the resulting letters to verify
-letter_obj$Letters
-
-# Merge with EMMs safely
-cld_tbl <- as.data.frame(em) %>%
-  mutate(
-    .group = letter_obj$Letters[
-      match(as.character(burn), names(letter_obj$Letters))
-    ],
-    perc_bt = (sin(emmean))^2 * 100
-  )
-
-cld_tbl
-
-# Get Dunnett comparisons
+# Dunnett-adjusted comparisons against High
 dunnett_contrasts <- contrast(
   em,
   method = "dunnett",
   ref = "High"
 )
 
-summary(dunnett_contrasts)
+dunnett_summary <- summary(dunnett_contrasts)
+dunnett_summary
+
+# Extract adjusted p-values and identify significant contrasts
+dunnett_p <- setNames(
+  dunnett_summary$p.value,
+  gsub(" - ", "-", dunnett_summary$contrast)
+)
+
+# Generate figure letters from the Dunnett comparisons.
+# Only comparisons against High are tested; comparisons among
+# the other treatments are not interpreted as statistical tests.
+
+treatments <- as.character(em@grid$burn)
+
+# Start with a shared letter for all treatments
+letters_dunnett <- setNames(
+  rep("a", length(treatments)),
+  treatments
+)
+
+# Assign a different letter to treatments significantly
+# different from High
+significant_vs_high <- dunnett_summary$contrast[
+  dunnett_summary$p.value < 0.05
+]
+
+significant_vs_high <- sub(
+  " - High$",
+  "",
+  significant_vs_high
+)
+
+letters_dunnett[significant_vs_high] <- "b"
+
+# Treatments not significantly different from High retain "a".
+# Give them "ab" so they share a letter with both High and
+# treatments that differ significantly from High.
+nonsignificant_vs_high <- setdiff(
+  treatments,
+  c("High", significant_vs_high)
+)
+
+letters_dunnett[nonsignificant_vs_high] <- "ab"
+
+# Check the letters
+letters_dunnett
+
+# Merge letters with estimated marginal means
+cld_tbl <- as.data.frame(em) %>%
+  mutate(
+    .group = unname(
+      letters_dunnett[as.character(burn)]
+    ),
+    perc_bt = (sin(emmean))^2 * 100
+  )
+
+cld_tbl
 
 ```
 
@@ -334,11 +371,48 @@ leveneTest(
 )
 ```
 
+#**Create Coefficient Table for Supplemental**
+```{r}
+library(broom)
+library(flextable)
 
+colonization_coef <- broom::tidy(col_model_simple) %>%
+  mutate(
+    term = dplyr::recode(
+      term,
+      "(Intercept)" = "(Intercept)",
+      "burnLow (Initial)" = "Low (Initial)",
+      "burnLow (Advanced)" = "Low (Advanced)",
+      "burnSuppressed" = "Suppressed"
+    ),
+    sig = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  ) %>%
+  transmute(
+    Term = term,
+    Estimate = sprintf("%.4f", estimate),
+    `Std. Error` = sprintf("%.4f", std.error),
+    `t value` = sprintf("%.4f", statistic),
+    `p value` = ifelse(
+      p.value < 0.001,
+      "<0.001",
+      sprintf("%.4f", p.value)
+    ),
+    sig = sig
+  )
 
+colonization_ft <- flextable(colonization_coef) %>%
+  theme_booktabs() %>%
+  font(fontname = "Times New Roman", part = "all") %>%
+  fontsize(size = 12, part = "all") %>%
+  autofit()
 
-
-
+colonization_ft
+```
 
 
 

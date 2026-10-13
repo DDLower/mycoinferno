@@ -936,21 +936,23 @@ ordination_df_all$burn_severity <- factor(trimws(ordination_df_all$burn_severity
 ordination_df_emf$burn_severity <- factor(trimws(ordination_df_emf$burn_severity),
   levels = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed"))
 
-# Convert "Drought" → "Water Limitation", preserve all valid entries 
+# Standardize water-treatment labels for both NMDS plots
 ordination_df_all$water <- factor(
   dplyr::recode(
     trimws(ordination_df_all$water),
     "Drought" = "Water Limitation",
-    "Normal" = "Normal"
+    "Normal" = "Full Water"
   ),
-  levels = c("Water Limitation", "Normal")
+  levels = c("Water Limitation", "Full Water")
 )
 
 ordination_df_emf$water <- factor(
-  dplyr::recode(trimws(ordination_df_emf$water),
-                "Drought" = "Water Limitation",
-                "Normal" = "Normal"),
-  levels = c("Water Limitation", "Normal")
+  dplyr::recode(
+    trimws(ordination_df_emf$water),
+    "Drought" = "Water Limitation",
+    "Normal" = "Full Water"
+  ),
+  levels = c("Water Limitation", "Full Water")
 )
 
 
@@ -999,14 +1001,14 @@ p_all <- ggplot(
 ) +
 
   scale_color_manual(
-    name = "Burn Severity",
+    name = "Fire History",
     values = burn_colors_cb
   ) +
 
   scale_shape_manual(
     name = "Water Treatment",
     values = c(
-      "Normal" = 17,
+      "Full Water" = 17,
       "Water Limitation" = 16
     ),
     drop = FALSE
@@ -1029,7 +1031,7 @@ p_all <- ggplot(
     label.color = NA,
     label = paste0(
       "<b>PERMANOVA</b><br>",
-      "Burn severity: <i>R</i><sup>2</sup> = 0.171, <i>p</i> = 0.0001***<br>",
+      "Fire History: <i>R</i><sup>2</sup> = 0.171, <i>p</i> = 0.0001***<br>",
       "Water: <i>R</i><sup>2</sup> = 0.017, <i>p</i> = 0.663<br>",
       "Dispersion: <i>p</i> = 0.183<br>",
       "<i>Stress</i> = 0.075"
@@ -1115,14 +1117,14 @@ p_emf <- ggplot(
 ) +
 
   scale_color_manual(
-    name = "Burn Severity",
+    name = "Fire History",
     values = burn_colors_cb
   ) +
 
   scale_shape_manual(
     name = "Water Treatment",
     values = c(
-      "Normal" = 17,
+      "Full Water" = 17,
       "Water Limitation" = 16
     ),
     drop = FALSE
@@ -1145,7 +1147,7 @@ p_emf <- ggplot(
     label.color = NA,
     label = paste0(
       "<b>PERMANOVA</b><br>",
-      "Burn severity: <i>R</i><sup>2</sup> = 0.167, <i>p</i> = 0.0005***<br>",
+      "Fire History: <i>R</i><sup>2</sup> = 0.167, <i>p</i> = 0.0005***<br>",
       "Water: <i>R</i><sup>2</sup> = 0.020, <i>p</i> = 0.538<br>",
       "Dispersion: <i>p</i> = 0.854<br>",
       "<i>Stress</i> = 0.087"
@@ -1252,9 +1254,35 @@ permanova_all_full <- vegan::adonis2(
 
 print(permanova_all_full)
 
+# -----------------------------
+# PERMANOVA: term-wise tests
+# -----------------------------
+
+set.seed(42)
+
+permanova_all_terms <- vegan::adonis2(
+  bray_dist ~ burn_severity * water,
+  data = metadata,
+  permutations = 9999,
+  by = "terms"
+)
+
+print(permanova_all_terms)
+
+# Marginal test of interaction
+set.seed(42)
+
+permanova_all_interaction_margin <- vegan::adonis2(
+  bray_dist ~ burn_severity * water,
+  data = metadata,
+  permutations = 9999,
+  by = "margin"
+)
+
+print(permanova_all_interaction_margin)
 
 # -----------------------------
-# PERMANOVA: burn severity
+# PERMANOVA: fire history
 # -----------------------------
 
 set.seed(42)
@@ -1354,6 +1382,33 @@ permanova_emf_full <- vegan::adonis2(
 
 print(permanova_emf_full)
 
+# -----------------------------
+# PERMANOVA: term-wise tests
+# -----------------------------
+
+set.seed(42)
+
+permanova_emf_terms <- vegan::adonis2(
+  emf_bray ~ burn_severity * water,
+  data = emf_metadata,
+  permutations = 9999,
+  by = "terms"
+)
+
+print(permanova_emf_terms)
+
+# Marginal test of interaction
+set.seed(42)
+
+permanova_emf_interaction_margin <- vegan::adonis2(
+  emf_bray ~ burn_severity * water,
+  data = emf_metadata,
+  permutations = 9999,
+  by = "margin"
+)
+
+print(permanova_emf_interaction_margin)
+
 
 # -----------------------------
 # PERMANOVA: burn severity
@@ -1410,6 +1465,7 @@ print(
 )
 
 ```
+
 ```{r}
 adonis2(
   bray_dist ~ burn_severity * water,
@@ -1446,8 +1502,8 @@ pairwise_permanova <- function(
 
   # Drop unused treatment levels
   sample_df[[group_var]] <- droplevels(
-    sample_df[[group_var]]
-  )
+  as.factor(sample_df[[group_var]])
+)
 
   groups <- levels(
     sample_df[[group_var]]
@@ -1501,8 +1557,8 @@ pairwise_permanova <- function(
       ]
 
       pair_metadata[[group_var]] <- droplevels(
-        pair_metadata[[group_var]]
-      )
+  as.factor(pair_metadata[[group_var]])
+)
 
       # Confirm alignment
       stopifnot(
@@ -2175,18 +2231,19 @@ print(closest_two_high$sample)
 ```{r}
 out_dir <- getwd()
 
+# All-taxa NMDS — vector PDF
 ggplot2::ggsave(
-  filename = file.path(out_dir, "Revised_AllTaxa_NMDS.tiff"),
+  filename = file.path(out_dir, "Revised_All-Taxa_NMDS.pdf"),
   plot = p_all,
+  device = grDevices::cairo_pdf,
   width = 12,
   height = 6,
-  units = "in",
-  dpi = 600,
-  compression = "lzw"
+  units = "in"
 )
 
+# All-taxa NMDS — 600-dpi PNG
 ggplot2::ggsave(
-  filename = file.path(out_dir, "Revised_AllTaxa_NMDS.png"),
+  filename = file.path(out_dir, "Revised_All-Taxa_NMDS.png"),
   plot = p_all,
   width = 12,
   height = 6,
@@ -2194,16 +2251,17 @@ ggplot2::ggsave(
   dpi = 600
 )
 
+# EMF-only NMDS — vector PDF
 ggplot2::ggsave(
-  filename = file.path(out_dir, "Revised_EMF_NMDS.tiff"),
+  filename = file.path(out_dir, "Revised_EMF_NMDS.pdf"),
   plot = p_emf,
+  device = grDevices::cairo_pdf,
   width = 12,
   height = 6,
-  units = "in",
-  dpi = 600,
-  compression = "lzw"
+  units = "in"
 )
 
+# EMF-only NMDS — 600-dpi PNG
 ggplot2::ggsave(
   filename = file.path(out_dir, "Revised_EMF_NMDS.png"),
   plot = p_emf,

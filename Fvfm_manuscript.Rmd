@@ -23,7 +23,7 @@ library(forcats)
 # **1. Load Data and Format x-Axis**
 ```{r load-data, message=FALSE, warning=FALSE}
 # Load data
-fvfm_data <- read.csv("FvFm.csv")
+fvfm_data <- read.csv("FvFm_revised.csv")
 
 # Format variables
 fvfm_data$Seedling <- as.factor(fvfm_data$Seedling)
@@ -33,11 +33,17 @@ fvfm_data$Sterilization <- factor(
 )
 fvfm_data$ABA_Concentration <- as.factor(fvfm_data$ABA_Concentration)
 
-# Clean water-treatment labels
+# Clean and standardize water-treatment labels
 fvfm_data$Water <- gsub("_", " ", fvfm_data$Water)
+
+fvfm_data$Water <- dplyr::recode(
+  fvfm_data$Water,
+  "Moist" = "Full Water"
+)
+
 fvfm_data$Water <- factor(
   fvfm_data$Water,
-  levels = c("ABA", "Moist", "Water Limitation")
+  levels = c("ABA", "Full Water", "Water Limitation")
 )
 
 # Clean burn-history labels
@@ -67,41 +73,123 @@ fvfm_data_clean$Fv_Fm_asin <- asin(sqrt(fvfm_data_clean$Fv_Fm))
 ## **2. Create model**
 ```{r}
 # Full factorial model
-fvfm_model_full <- lm(
+fvfm_model <- lm(
   Fv_Fm_asin ~ Burn_Severity * Water * Sterilization,
   data = fvfm_data_clean
 )
 
-# Evaluate three-way interaction
-drop1(fvfm_model_full, test = "F")
+summary(fvfm_model)
 
-# Model containing all two-way interactions
-fvfm_model_2way <- lm(
-  Fv_Fm_asin ~
-    Burn_Severity * Sterilization +
-    Burn_Severity * Water +
-    Sterilization * Water,
-  data = fvfm_data_clean
-)
-
-# Compare full and two-way models
-anova(fvfm_model_2way, fvfm_model_full)
-
-# Evaluate two-way interactions
-drop1(fvfm_model_2way, test = "F")
-
-# Additive model
-fvfm_model <- lm(
-  Fv_Fm_asin ~ Burn_Severity + Water + Sterilization,
-  data = fvfm_data_clean
-)
-
-# Compare additive and interaction models
-anova(fvfm_model, fvfm_model_2way)
-
-# Compare model fit
-AIC(fvfm_model_full, fvfm_model_2way, fvfm_model)
+joint_tests(fvfm_model)
 ```
+
+
+```{r}
+joint_tests(fvfm_model_full) |>
+  subset(`model term` == "Burn_Severity:Water:Sterilization")
+```
+```{r}
+car::leveneTest(
+  Fv_Fm_asin ~ interaction(Burn_Severity, Water, Sterilization),
+  data = fvfm_data_clean
+)
+```
+```{r}
+library(sandwich)
+library(lmtest)
+
+car::Anova(
+  fvfm_model_robust,
+  type = 3,
+  vcov. = sandwich::vcovHC(fvfm_model_robust, type = "HC3")
+)
+
+coeftest(
+  fvfm_model,
+  vcov. = vcovHC(fvfm_model, type = "HC3")
+)
+
+
+```
+```{r}
+fvfm_model_robust <- lm(
+  Fv_Fm_asin ~ Burn_Severity * Water * Sterilization,
+  data = fvfm_data_clean,
+  contrasts = list(
+    Burn_Severity = "contr.sum",
+    Water = "contr.sum",
+    Sterilization = "contr.sum"
+  )
+)
+
+water_by_ster_robust <- emmeans(
+  fvfm_model_robust,
+  ~ Water | Sterilization,
+  vcov. = sandwich::vcovHC(fvfm_model_robust, type = "HC3")
+)
+
+water_by_ster_robust
+
+pairs(
+  water_by_ster_robust,
+  adjust = "tukey"
+)
+
+summary(water_by_ster_robust) %>%
+  mutate(
+    Fv_Fm = sin(emmean)^2,
+    lower_Fv_Fm = sin(lower.CL)^2,
+    upper_Fv_Fm = sin(upper.CL)^2
+  )
+
+
+fvfm_emm_robust <- emmeans(
+  fvfm_model_robust,
+  ~ Sterilization,
+  vcov. = sandwich::vcovHC(fvfm_model_robust, type = "HC3")
+)
+
+pairs(fvfm_emm_robust)
+
+car::Anova(
+  fvfm_model_robust,
+  type = 3,
+  vcov. = sandwich::vcovHC(fvfm_model_robust, type = "HC3")
+)
+```
+```{r}
+# Transformations
+fvfm_data_clean$Fv_Fm_asin <- asin(sqrt(fvfm_data_clean$Fv_Fm))
+
+fvfm_data_clean$Fv_Fm_logit <- log(
+  fvfm_data_clean$Fv_Fm / (1 - fvfm_data_clean$Fv_Fm)
+)
+
+# Same FULL hypothesis-driven model for each response scale
+model_raw <- lm(
+  Fv_Fm ~ Burn_Severity * Water * Sterilization,
+  data = fvfm_data_clean
+)
+
+model_asin <- lm(
+  Fv_Fm_asin ~ Burn_Severity * Water * Sterilization,
+  data = fvfm_data_clean
+)
+
+model_logit <- lm(
+  Fv_Fm_logit ~ Burn_Severity * Water * Sterilization,
+  data = fvfm_data_clean
+)
+```
+
+```{r}
+pls205_diagnostics(model_raw)
+
+pls205_diagnostics(model_asin)
+
+pls205_diagnostics(model_logit)
+```
+
 
 ## **Final model diagnostics and inference**
 ```{r}
@@ -165,6 +253,23 @@ anova(fvfm_model_full)
 
 joint_tests(fvfm_model_full)
 ```
+```{r}
+ster_means_robust <- emmeans(
+  fvfm_model_robust,
+  ~ Sterilization,
+  vcov. = sandwich::vcovHC(fvfm_model_robust, type = "HC3")
+)
+
+summary(ster_means_robust) %>%
+  mutate(
+    Fv_Fm = sin(emmean)^2,
+    lower_Fv_Fm = sin(lower.CL)^2,
+    upper_Fv_Fm = sin(upper.CL)^2
+  )
+
+
+
+```
 
 
 ## **4. Plot**
@@ -172,7 +277,7 @@ joint_tests(fvfm_model_full)
 # Color palette
 cb_palette <- c(
   "ABA" = "#E69F00",
-  "Moist" = "#56B4E9",
+  "Full Water" = "#56B4E9",
   "Water Limitation" = "#009E73"
 )
 
@@ -294,6 +399,10 @@ aba_means_df <- as.data.frame(aba_means) |>
 aba_means_df
 ```
 
+```{r}
+anova(aba_model)
+```
+
 
 ```{r}
 # Ensure factor order
@@ -346,5 +455,333 @@ aba_con <- ggplot(plot_data, aes(x = ABA_Concentration, y = Fv_Fm, fill = ABA_Co
 
 # Display plot
 aba_con
+```
+
+```{r}
+# Vector PDF
+ggsave(
+  filename = "ABA_FvFm_concentration.pdf",
+  plot = aba_con,
+  width = 12,
+  height = 7,
+  units = "in"
+)
+
+# 600 dpi PNG
+ggsave(
+  filename = "ABA_FvFm_concentration.png",
+  plot = aba_con,
+  width = 12,
+  height = 7,
+  units = "in",
+  dpi = 600
+)
+```
+
+
+## **Revised plot w/ background colors matching other plots
+```{r revised-fvfm-plot, fig.width=12, fig.height=7}
+
+# ============================================================
+# Revised Fv/Fm plot
+# ============================================================
+
+# ------------------------------------------------------------
+# Fire History background colors
+# ------------------------------------------------------------
+
+burn_colors_cb <- c(
+  "High" = hcl(15, 75, 55),
+  "Low (Initial)" = hcl(260, 60, 65),
+  "Low (Advanced)" = hcl(75, 65, 75),
+  "Suppressed" = hcl(330, 50, 70)
+)
+
+fire_history_bg_fvfm <- data.frame(
+  Burn_Severity = factor(
+    c(
+      "High",
+      "Low (Initial)",
+      "Low (Advanced)",
+      "Suppressed"
+    ),
+    levels = c(
+      "High",
+      "Low (Initial)",
+      "Low (Advanced)",
+      "Suppressed"
+    )
+  ),
+  xmin = c(0.5, 1.5, 2.5, 3.5),
+  xmax = c(1.5, 2.5, 3.5, 4.5)
+)
+
+
+# ------------------------------------------------------------
+# Grayscale Water Treatment palette
+# ------------------------------------------------------------
+
+water_colors_grey <- c(
+  "ABA"              = "grey25",
+  "Full Water"       = "grey55",
+  "Water Limitation" = "grey85"
+)
+
+
+# ------------------------------------------------------------
+# Fv/Fm plot with Fire History background bands
+# ------------------------------------------------------------
+
+fvfm_plot_bg <- ggplot() +
+
+  # Fire History background bands
+  geom_rect(
+    data = fire_history_bg_fvfm,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = -Inf,
+      ymax = Inf,
+      fill = Burn_Severity
+    ),
+    inherit.aes = FALSE,
+    alpha = 0.60,
+    color = NA
+  ) +
+
+  # Fire History fill scale
+  scale_fill_manual(
+    values = burn_colors_cb,
+    guide = "none"
+  ) +
+
+  # Start new fill scale for Water Treatment
+  ggnewscale::new_scale_fill() +
+
+  # Boxplots
+  geom_boxplot(
+    data = fvfm_data_clean,
+    aes(
+      x = Burn_Severity,
+      y = Fv_Fm,
+      fill = Water
+    ),
+    outlier.shape = NA,
+    color = "black",
+    linewidth = 0.6,
+    position = position_dodge(width = 0.75)
+  ) +
+
+  # Individual observations
+  geom_point(
+    data = fvfm_data_clean,
+    aes(
+      x = Burn_Severity,
+      y = Fv_Fm,
+      fill = Water,
+      shape = Water,
+      group = Water
+    ),
+    color = "black",
+    stroke = 0.35,
+    size = 1.8,
+    alpha = 0.75,
+    position = position_jitterdodge(
+      jitter.width = 0.10,
+      dodge.width = 0.75
+    )
+  ) +
+
+  # Point shapes
+  scale_shape_manual(
+    values = c(
+      "ABA"              = 21,
+      "Full Water"       = 22,
+      "Water Limitation" = 24
+    ),
+    name = "Water Treatment"
+  ) +
+
+  # Water Treatment grayscale
+  scale_fill_manual(
+    values = water_colors_grey,
+    name = "Water Treatment"
+  ) +
+
+  # Remove white space at edges
+  scale_x_discrete(
+    expand = expansion(add = 0)
+  ) +
+
+  facet_wrap(~ Sterilization) +
+
+  labs(
+    x = "Fire History",
+    y = expression(F[v]/F[m]),
+    fill = "Water Treatment"
+  ) +
+
+  coord_cartesian(
+    ylim = c(0.18, 0.85),
+    clip = "off"
+  ) +
+
+  theme_minimal(base_size = 12) +
+
+  theme(
+    axis.title = element_text(
+      face = "bold",
+      size = 13
+    ),
+
+    axis.text = element_text(
+      size = 11
+    ),
+
+    axis.text.x = element_text(
+      angle = 50,
+      hjust = 1,
+      vjust = 1,
+      face = "bold"
+    ),
+
+    legend.title = element_text(
+      face = "bold",
+      size = 12
+    ),
+
+    legend.text = element_text(
+      size = 11
+    ),
+
+    panel.border = element_rect(
+      color = "black",
+      fill = NA,
+      linewidth = 0.8
+    ),
+
+    strip.background = element_blank(),
+
+    strip.text = element_text(
+      face = "bold",
+      size = 12
+    ),
+
+    plot.title = element_blank()
+  )
+
+fvfm_plot_bg
+```
+
+```{r}
+ggsave(
+  filename = "fvfm_plot_revised.png",
+  plot = fvfm_plot_bg,
+  width = 12,
+  height = 7,
+  units = "in",
+  dpi = 600,
+  bg = "white"
+)
+
+ggsave(
+  filename = "fvfm_plot_revised.pdf",
+  plot = fvfm_plot_bg,
+  width = 12,
+  height = 7,
+  units = "in",
+  device = cairo_pdf,
+  bg = "white"
+)
+```
+
+
+## **Checking residuals**
+```{r}
+fvfm_data_clean$resid_full <- residuals(fvfm_model)
+
+variance_by_cell <- fvfm_data_clean |>
+  dplyr::group_by(Burn_Severity, Water, Sterilization) |>
+  dplyr::summarise(
+    n = dplyr::n(),
+    residual_variance = var(resid_full),
+    residual_SD = sd(resid_full),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(desc(residual_variance))
+
+variance_by_cell
+```
+
+```{r}
+fvfm_data_clean |>
+  dplyr::group_by(Sterilization) |>
+  dplyr::summarise(
+    n = dplyr::n(),
+    residual_variance = var(resid_full),
+    residual_SD = sd(resid_full)
+  )
+```
+
+##**Coefficient Table for Supplemental**
+```{r}
+library(sandwich)
+library(lmtest)
+library(flextable)
+library(dplyr)
+
+# HC3-robust coefficient tests
+fvfm_ct <- lmtest::coeftest(
+  fvfm_model_robust,
+  vcov. = sandwich::vcovHC(fvfm_model_robust, type = "HC3")
+)
+
+
+# Add significance stars and format
+fvfm_coef <- data.frame(
+  term = rownames(fvfm_ct),
+  Estimate = fvfm_ct[, 1],
+  `Std. Error` = fvfm_ct[, 2],
+  `t value` = fvfm_ct[, 3],
+  `p value` = fvfm_ct[, 4],
+  check.names = FALSE
+) %>%
+  mutate(
+    Significance = case_when(
+      `p value` < 0.001 ~ "***",
+      `p value` < 0.01  ~ "**",
+      `p value` < 0.05  ~ "*",
+      TRUE ~ ""
+    ),
+    Estimate = sprintf("%.4f", Estimate),
+    `Std. Error` = sprintf("%.4f", `Std. Error`),
+    `t value` = sprintf("%.4f", `t value`),
+    `p value` = ifelse(
+      `p value` < 0.001,
+      "<0.001",
+      sprintf("%.4f", `p value`)
+    )
+  ) %>%
+  dplyr::select(
+    Term = term,
+    Estimate,
+    `Std. Error`,
+    `t value`,
+    `p value`,
+    Significance
+  )
+
+fvfm_coef
+
+library(flextable)
+
+fvfm_ft <- flextable(fvfm_coef) %>%
+  theme_booktabs() %>%
+  font(fontname = "Times New Roman", part = "all") %>%
+  fontsize(size = 12, part = "all") %>%
+  autofit()
+
+fvfm_ft
+
 ```
 

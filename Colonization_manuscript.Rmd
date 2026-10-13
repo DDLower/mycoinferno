@@ -42,19 +42,8 @@ str(colonization_data)
 ```
 
 
-## **3. Evaluate Rack as Random Effect**
-```{r test-random-effect}
 
-# Test model with rack as a random effect
-col_model_rack <- lmer(perc_col ~ burn * drought * sterilization + (1 | rack), data = colonization_data)
-
-# Full linear model without rack
-col_model <- lm(perc_col ~ burn * drought * sterilization, data = colonization_data)
-anova(col_model_rack, col_model)
-```
-**We found that rack explained no significant variation in biomass (Chisq = 0, p = 1.000), so we used a fixed-effects model for final analyses.**
-
-## **3. Filter for Unsterilized Samples and Fit Final Model**
+## **2. Filter for Unsterilized Samples and Test/Fit Final Model**
 ```{r fit-final-model}
 # Filter to unsterilized samples only and re-do levels
 colonization_filtered <- colonization_data %>%
@@ -72,7 +61,7 @@ colonization_filtered <- colonization_data %>%
 
 # Apply arcsine sqrt transformation
 colonization_transformed <- colonization_filtered %>%
-  mutate(perc_col_asin = asin(sqrt(perc_col / 100)))
+  mutate(perc_col_asin = asin(sqrt(perc_col)))
 
 ```
 
@@ -86,15 +75,84 @@ col_model_trans <- lm(perc_col_asin ~ burn * drought, data = colonization_transf
 pls205_diagnostics(col_model_trans)
 ```
 
+```{r}
+# Compare full, additive, and burn-only models
+
+# Full model
+col_model_full <- lm(
+  perc_col_asin ~ burn * drought,
+  data = colonization_transformed
+)
+
+# Remove interaction
+col_model_additive <- lm(
+  perc_col_asin ~ burn + drought,
+  data = colonization_transformed
+)
+
+# Remove drought
+col_model_burn <- lm(
+  perc_col_asin ~ burn,
+  data = colonization_transformed
+)
+
+# Nested model comparisons
+anova(
+  col_model_burn,
+  col_model_additive,
+  col_model_full
+)
+
+# Compare AIC
+AIC(
+  col_model_burn,
+  col_model_additive,
+  col_model_full
+)
+```
+
+## **3. Evaluate Rack as Random Effect**
+```{r}
+# Test again as a random effect using the final model structure
+
+col_model_rack_final <- lmer(
+  perc_col_asin ~ burn + (1 | rack),
+  data = colonization_transformed,
+  REML = FALSE
+)
+
+# Fixed-effects version using ML for comparison
+col_model_fixed_final <- lm(
+  perc_col_asin ~ burn,
+  data = colonization_transformed
+)
+
+# Check rack variance
+VarCorr(col_model_rack_final)
+
+# Check for singular fit
+isSingular(col_model_rack_final)
+
+# Compare AIC
+AIC(
+  col_model_fixed_final,
+  col_model_rack_final
+)
+```
+
 
 ## **4. ANOVA and Estimated Marginal Means**
 ```{r anova-emmeans}
-# ANOVA
-anova(col_model_trans)
+# Final model after model comparison
+# Neither drought nor burn x drought significantly improved model fit,
+# so the more parsimonious burn-only model was retained
+col_model_simple <- lm(
+  perc_col_asin ~ burn,
+  data = colonization_transformed
+)
 
-# Drought and burn x drought interaction not significant
-# Simplify model for CLD table
-col_model_simple <- lm(perc_col_asin ~ burn, data = colonization_transformed)
+# ANOVA for final model
+anova(col_model_simple)
 
 # Get estimated marginal means
 em <- emmeans(col_model_simple, ~ burn)
@@ -108,7 +166,7 @@ pw_summary <- summary(pairwise)
 # Keep only one direction of each contrast
 pvals_named <- pw_summary$p.value
 names(pvals_named) <- gsub(" - ", "-", pw_summary$contrast)
-pvals_named <- pvals_named[!duplicated(names(pvals_named))]   
+pvals_named <- pvals_named[!duplicated(names(pvals_named))]
 
 # Create compact letters
 letter_obj <- multcompLetters(pvals_named, threshold = 0.05)
@@ -119,17 +177,25 @@ letter_obj$Letters
 # Merge with EMMs safely
 cld_tbl <- as.data.frame(em) %>%
   mutate(
-    .group = letter_obj$Letters[match(as.character(burn), names(letter_obj$Letters))],
+    .group = letter_obj$Letters[
+      match(as.character(burn), names(letter_obj$Letters))
+    ],
     perc_bt = (sin(emmean))^2 * 100
   )
 
 cld_tbl
 
 # Get Dunnett comparisons
-dunnett_contrasts <- contrast(em, method = "dunnett", ref = "High")
+dunnett_contrasts <- contrast(
+  em,
+  method = "dunnett",
+  ref = "High"
+)
+
 summary(dunnett_contrasts)
 
 ```
+
 
 ```{r}
 # Back-transform arcsine sqrt: 
@@ -218,6 +284,19 @@ final_colonization_plot
 
 ```
 
+```{r}
+library(car)
+
+# Standard Levene test
+leveneTest(perc_col_asin ~ burn, data = colonization_transformed)
+
+# Brown–Forsythe test: centered on group medians
+leveneTest(
+  perc_col_asin ~ burn,
+  data = colonization_transformed,
+  center = median
+)
+```
 
 
 

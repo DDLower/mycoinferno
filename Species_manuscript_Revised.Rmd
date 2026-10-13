@@ -629,3 +629,96 @@ pairs(
 )
 ```
 
+##**Coefficient Tables for Supplemental**
+```{r}
+library(broom)
+library(flextable)
+library(dplyr)
+
+# All-taxa richness coefficients
+species_coef <- broom::tidy(species_model) %>%
+  mutate(
+    Term = dplyr::recode(
+      term,
+      "(Intercept)" = "(Intercept)",
+      "burnLow (Initial)" = "Low (Initial)",
+      "burnLow (Advanced)" = "Low (Advanced)",
+      "burnSuppressed" = "Suppressed"
+    ),
+    Significance = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  ) %>%
+  dplyr::select(
+    Term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    `p value` = p.value,
+    Significance
+  ) %>%
+  mutate(
+    Estimate = round(Estimate, 4),
+    `Std. Error` = round(`Std. Error`, 4),
+    `t value` = round(`t value`, 4),
+    `p value` = ifelse(
+      `p value` < 0.001,
+      "<0.001",
+      sprintf("%.4f", `p value`)
+    )
+  )
+
+
+# EMF richness coefficients
+emf_coef <- broom::tidy(emf_model) %>%
+  mutate(
+    Term = dplyr::recode(
+      term,
+      "(Intercept)" = "(Intercept)",
+      "burnLow (Initial)" = "Low (Initial)",
+      "burnLow (Advanced)" = "Low (Advanced)",
+      "burnSuppressed" = "Suppressed"
+    ),
+    Significance = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  ) %>%
+  dplyr::select(
+    Term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    `p value` = p.value,
+    Significance
+  ) %>%
+  mutate(
+    Estimate = round(Estimate, 4),
+    `Std. Error` = round(`Std. Error`, 4),
+    `t value` = round(`t value`, 4),
+    `p value` = ifelse(
+      `p value` < 0.001,
+      "<0.001",
+      sprintf("%.4f", `p value`)
+    )
+  )
+
+
+species_ft <- flextable(species_coef) %>%
+  theme_booktabs() %>%
+  font(fontname = "Times New Roman", part = "all") %>%
+  fontsize(size = 12, part = "all") %>%
+  autofit()
+
+emf_ft <- flextable(emf_coef) %>%
+  theme_booktabs() %>%
+  font(fontname = "Times New Roman", part = "all") %>%
+  fontsize(size = 12, part = "all") %>%
+  autofit()
+```
+

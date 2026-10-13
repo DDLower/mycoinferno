@@ -21,6 +21,7 @@ library(emmeans)
 library(patchwork)
 library(multcomp)
 library(multcompView)
+library(lme4)
 
 ```
 
@@ -64,10 +65,133 @@ burn_colors_cb <- c(
 
 # **2. Linear Model and Analysis**
 
+```{r}
+
+# MODEL COMPARISON: ALL-TAXA SPECIES RICHNESS
+
+# Full model
+species_model_full <- lm(
+  number_of_species ~ burn * drought,
+  data = data
+)
+
+# Additive model
+species_model_additive <- lm(
+  number_of_species ~ burn + drought,
+  data = data
+)
+
+# Burn-only model
+species_model_burn <- lm(
+  number_of_species ~ burn,
+  data = data
+)
+
+# Nested model comparison
+anova(
+  species_model_burn,
+  species_model_additive,
+  species_model_full
+)
+
+# Compare AIC
+AIC(
+  species_model_burn,
+  species_model_additive,
+  species_model_full
+)
+```
+
+```{r}
+
+# MODEL COMPARISON: EMF SPECIES RICHNESS
+
+# Full model
+emf_model_full <- lm(
+  emf_species ~ burn * drought,
+  data = data
+)
+
+# Additive model
+emf_model_additive <- lm(
+  emf_species ~ burn + drought,
+  data = data
+)
+
+# Burn-only model
+emf_model_burn <- lm(
+  emf_species ~ burn,
+  data = data
+)
+
+# Nested model comparison
+anova(
+  emf_model_burn,
+  emf_model_additive,
+  emf_model_full
+)
+
+# Compare AIC
+AIC(
+  emf_model_burn,
+  emf_model_additive,
+  emf_model_full
+)
+```
+
+```{r}
+
+# TEST RACK RANDOM EFFECT: ALL-TAXA RICHNESS
+
+
+species_model_rack <- lmer(
+  number_of_species ~ burn + (1 | rack),
+  data = data,
+  REML = FALSE
+)
+
+species_model_fixed <- lm(
+  number_of_species ~ burn,
+  data = data
+)
+
+VarCorr(species_model_rack)
+isSingular(species_model_rack)
+
+AIC(
+  species_model_fixed,
+  species_model_rack
+)
+
+
+
+# TEST RACK RANDOM EFFECT: EcM RICHNESS
+
+
+emf_model_rack <- lmer(
+  emf_species ~ burn + (1 | rack),
+  data = data,
+  REML = FALSE
+)
+
+emf_model_fixed <- lm(
+  emf_species ~ burn,
+  data = data
+)
+
+VarCorr(emf_model_rack)
+isSingular(emf_model_rack)
+
+AIC(
+  emf_model_fixed,
+  emf_model_rack
+)
+```
+
 
 ```{r}
 # Fit model
-species_model <- lm(number_of_species ~ burn * drought, data = data)
+species_model <- lm(number_of_species ~ burn, data = data)
 
 anova(species_model)
 
@@ -96,44 +220,50 @@ qqline(resid(species_model), col = "blue", lwd = 2)
 
 ```{r lm-anova-species}
 
-# Model w/ ANOVA for categorical burn predictor
-species_model2 <- aov(number_of_species ~ burn, data = data)
-summary(species_model2)
-
-# Post-hoc analysis
-TukeyHSD(species_model2)
-
-# Emmeans
-species_means <- emmeans(species_model2, ~ burn)
+# Estimated marginal means
+species_means <- emmeans(species_model, ~ burn)
 species_means
 
+# Pairwise comparisons with Tukey adjustment
+pairs(species_means, adjust = "tukey")
+
 # CLD table
-species_cld <- cld(species_means, Letters = letters)
+species_cld <- cld(
+  species_means,
+  Letters = letters,
+  adjust = "tukey"
+)
+
 species_cld
 ```
 
-```{r diagnostic, echo=TRUE, eval=TRUE, include=FALSE}
-
-# Diagnostics (just to double-check)
-pls205_diagnostics(species_model2)
-```
 
 
 ```{r lm-anova-emf}
 
-# Model w/ categorical burn predictor for just EMF
-emf_model2 <- aov(emf_species ~ burn, data = data)
-summary(emf_model2)
+# Final model for EcM species richness
+emf_model <- lm(
+  emf_species ~ burn,
+  data = data
+)
 
-# Post-hoc analysis
-TukeyHSD(emf_model2)
+# ANOVA
+anova(emf_model)
 
-# Emmeans
-emf_means <- emmeans(emf_model2, ~ burn)
+# Estimated marginal means
+emf_means <- emmeans(emf_model, ~ burn)
 emf_means
 
+# Pairwise comparisons with Tukey adjustment
+pairs(emf_means, adjust = "tukey")
+
 # CLD table
-species_emf_cld <- cld(emf_means, Letters = letters)
+species_emf_cld <- cld(
+  emf_means,
+  Letters = letters,
+  adjust = "tukey"
+)
+
 species_emf_cld
 ```
 
@@ -142,65 +272,193 @@ species_emf_cld
 
 ```{r plot-all-tax}
 
-# Create CLD annotations
-cld_all <- data.frame(
-burn = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed"),
-label = c("a", "ab", "ab", "b"),
-y = c(6.5, 6.5, 6.5, 6.5)
-)
+# Prepare CLD labels directly from emmeans output
+cld_all <- as.data.frame(species_cld) %>%
+  dplyr::mutate(
+    burn = factor(
+      burn,
+      levels = c(
+        "High",
+        "Low (Initial)",
+        "Low (Advanced)",
+        "Suppressed"
+      )
+    ),
+    label = trimws(.group),
+    y = 6.5
+  )
 
-all_species_plot <- ggplot(data, aes(x = burn, y = number_of_species, fill = burn)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.6, color = "black") +
-  geom_jitter(position = position_jitter(width = 0.2, height = 0.2),
-              shape = 21, color = "black", size = 1.5, alpha = 0.6, stroke = 0.4) +
-  geom_text(data = cld_all, aes(x = burn, y = y, label = label),
-            inherit.aes = FALSE, size = 5, fontface = "bold") +
-  labs(x = "Burn Severity", y = "Species Count", title = "All Taxa") +
-  scale_fill_manual(values = burn_colors_cb) +
-  coord_cartesian(ylim = c(0, 7)) + 
-  theme_minimal(base_size = 14) +
+# Plot
+all_species_plot <- ggplot(
+  data,
+  aes(
+    x = burn,
+    y = number_of_species,
+    fill = burn
+  )
+) +
+  geom_boxplot(
+    outlier.shape = NA,
+    alpha = 0.6,
+    color = "black"
+  ) +
+  geom_jitter(
+    position = position_jitter(
+      width = 0.2,
+      height = 0.2
+    ),
+    shape = 21,
+    color = "black",
+    size = 1.5,
+    alpha = 0.6,
+    stroke = 0.4
+  ) +
+  geom_text(
+    data = cld_all,
+    aes(
+      x = burn,
+      y = y,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    size = 5,
+    fontface = "bold"
+  ) +
+  labs(
+    x = "Burn Severity",
+    y = "Species Count",
+    title = "All Taxa"
+  ) +
+  scale_fill_manual(
+    values = burn_colors_cb
+  ) +
+  coord_cartesian(
+    ylim = c(0, 7)
+  ) +
+  theme_minimal(
+    base_size = 14
+  ) +
   theme(
-    axis.text.x = element_text(angle = 50, hjust = 1, face = "bold"),
-    axis.text.y = element_text(face = "bold"),
-    axis.title = element_text(face = "bold"),
+    axis.text.x = element_text(
+      angle = 50,
+      hjust = 1,
+      face = "bold"
+    ),
+    axis.text.y = element_text(
+      face = "bold"
+    ),
+    axis.title = element_text(
+      face = "bold"
+    ),
     legend.position = "none",
-    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
-    plot.title = element_text(face = "bold", size = 14, hjust = 0.5)
+    panel.border = element_rect(
+      color = "black",
+      fill = NA,
+      linewidth = 1
+    ),
+    plot.title = element_text(
+      face = "bold",
+      size = 14,
+      hjust = 0.5
+    )
   )
 
 all_species_plot
+
+
+
+
 ```
-
-
-
-
 
 ```{r plot-emf}
 
-# Create CLD annotations
-cld_emf <- data.frame(
-burn = c("High", "Low (Initial)", "Low (Advanced)", "Suppressed"),
-label = c("a", "bc", "b", "c"),
-y = c(6.5, 6.5, 6.5, 6.5)
-)
+# Prepare EcM CLD annotations directly from model output
+cld_emf <- as.data.frame(species_emf_cld) %>%
+  dplyr::mutate(
+    burn = factor(
+      burn,
+      levels = c(
+        "High",
+        "Low (Initial)",
+        "Low (Advanced)",
+        "Suppressed"
+      )
+    ),
+    label = trimws(.group),
+    y = 6.5
+  )
 
-emf_species_plot <- ggplot(data, aes(x = burn, y = emf_species, fill = burn)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.6, color = "black") +
-  geom_jitter(position = position_jitter(width = 0.2, height = 0.2),
-              shape = 21, color = "black", size = 1.5, alpha = 0.6, stroke = 0.4) +
-  geom_text(data = cld_emf, aes(x = burn, y = y, label = label),
-            inherit.aes = FALSE, size = 5, fontface = "bold") +
-  labs(x = "Burn Severity", y = "EMF Species Count", title = "EMF Taxa") +
-  scale_fill_manual(values = burn_colors_cb) +
-  coord_cartesian(ylim = c(0, 7)) +
+# EcM species richness plot
+emf_species_plot <- ggplot(
+  data,
+  aes(
+    x = burn,
+    y = emf_species,
+    fill = burn
+  )
+) +
+  geom_boxplot(
+    outlier.shape = NA,
+    alpha = 0.6,
+    color = "black"
+  ) +
+  geom_jitter(
+    position = position_jitter(
+      width = 0.2,
+      height = 0.2
+    ),
+    shape = 21,
+    color = "black",
+    size = 1.5,
+    alpha = 0.6,
+    stroke = 0.4
+  ) +
+  geom_text(
+    data = cld_emf,
+    aes(
+      x = burn,
+      y = y,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    size = 5,
+    fontface = "bold"
+  ) +
+  labs(
+    x = "Burn Severity",
+    y = "EMF Species Count",
+    title = "EMF Taxa"
+  ) +
+  scale_fill_manual(
+    values = burn_colors_cb
+  ) +
+  coord_cartesian(
+    ylim = c(0, 7)
+  ) +
   theme_minimal(base_size = 14) +
   theme(
-    axis.text.x = element_text(angle = 50, hjust = 1, face = "bold"),
-    axis.text.y = element_text(face = "bold"),
-    axis.title = element_text(face = "bold"),
+    axis.text.x = element_text(
+      angle = 50,
+      hjust = 1,
+      face = "bold"
+    ),
+    axis.text.y = element_text(
+      face = "bold"
+    ),
+    axis.title = element_text(
+      face = "bold"
+    ),
     legend.position = "none",
-    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
-    plot.title = element_text(face = "bold", size = 14, hjust = 0.5)
+    panel.border = element_rect(
+      color = "black",
+      fill = NA,
+      linewidth = 1
+    ),
+    plot.title = element_text(
+      face = "bold",
+      size = 14,
+      hjust = 0.5
+    )
   )
 
 emf_species_plot
